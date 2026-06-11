@@ -1,0 +1,12 @@
+from .models import DetectionRule
+
+RULES = [
+    DetectionRule(rule_id='DET-SSH-001', name='SSH brute force', description='Multiple failed SSH logins from same source to same asset.', severity='high', tactic='Credential Access', technique='T1110', confidence=0.86, event_type='ssh_login', status='failure', threshold=5, window_minutes=5, group_by=['src_ip','asset']),
+    DetectionRule(rule_id='DET-SSH-002', name='Successful login after failures', description='Successful login after repeated failures for same source/user.', severity='high', tactic='Initial Access', technique='T1078', confidence=0.82, event_type='ssh_login', status='success', threshold=4, window_minutes=10, group_by=['src_ip','user']),
+    DetectionRule(rule_id='DET-PS-001', name='Suspicious encoded PowerShell', description='PowerShell command uses encoded/bypass/hidden execution indicators.', severity='critical', tactic='Execution', technique='T1059.001', confidence=0.9, event_type='powershell', keywords=['-enc','encodedcommand','frombase64string','bypass','hidden']),
+    DetectionRule(rule_id='DET-NET-001', name='Port scan / network scan', description='One source connects to many destination ports quickly.', severity='medium', tactic='Discovery', technique='T1046', confidence=0.78, event_type='network_flow', threshold=10, window_minutes=5, group_by=['src_ip','dst_ip']),
+    DetectionRule(rule_id='DET-WIN-001', name='New admin account creation', description='Windows account creation or admin group modification.', severity='critical', tactic='Persistence', technique='T1136', confidence=0.87, event_type='account_change', keywords=['admin','domain admins','created','added']),
+    DetectionRule(rule_id='DET-WEB-001', name='SQL injection attempt', description='Web request contains SQL injection indicators.', severity='high', tactic='Initial Access', technique='T1190', confidence=0.84, event_type='http_request', keywords=['union select',"' or '1'='1",'sqlmap','information_schema','../']),
+    DetectionRule(rule_id='DET-AI-001', name='Rare or unusual login source', description='Successful login source appears outside baseline/private network.', severity='medium', tactic='Initial Access', technique='T1078', confidence=0.7, event_type='ssh_login', status='success'),
+    DetectionRule(rule_id='DET-AI-002', name='Off-hours privileged activity', description='Privileged login outside business hours.', severity='medium', tactic='Privilege Escalation', technique='T1078', confidence=0.72, event_type='ssh_login', status='success'),
+]
