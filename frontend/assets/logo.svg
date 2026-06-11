@@ -1,0 +1,11 @@
+<svg width="900" height="240" viewBox="0 0 900 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="900" height="240" fill="transparent"/>
+  <g transform="translate(38 28)">
+    <path d="M92 0C124 26 154 38 184 44V91C184 139 151 171 92 190C33 171 0 139 0 91V44C30 38 60 26 92 0Z" fill="#0F1B2D"/>
+    <path d="M92 0C124 26 154 38 184 44V91C184 139 151 171 92 190V0Z" fill="#071225"/>
+    <path d="M32 91L84 118L154 55" stroke="#F8FAFC" stroke-width="12" stroke-linecap="square"/>
+    <path d="M32 121L84 148L154 85" stroke="#F8FAFC" stroke-width="12" stroke-linecap="square"/>
+    <path d="M32 151L84 178L154 115" stroke="#F8FAFC" stroke-width="12" stroke-linecap="square"/>
+  </g>
+  <text x="270" y="150" font-family="Inter, Arial, sans-serif" font-size="88" font-weight="800" fill="#132033" letter-spacing="2">AI-SIEM</text>
+</svg>
