@@ -1,0 +1,6 @@
+{
+  "id": "dash-mitre-coverage",
+  "title": "MITRE ATT&CK Coverage",
+  "description": "Visualizes active tactics and techniques mapped from detections.",
+  "widgets": ["tactic_counts", "top_techniques", "coverage_gaps"]
+}
