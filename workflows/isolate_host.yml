@@ -1,0 +1,9 @@
+id: WF-002
+name: Isolate Host
+trigger: confirmed endpoint compromise
+actions:
+  - notify SOC lead
+  - isolate host using EDR
+  - collect process tree and network connections
+  - preserve evidence
+  - start remediation checklist
