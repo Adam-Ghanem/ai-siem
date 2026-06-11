@@ -1,0 +1,8 @@
+id: WF-001
+name: Block IP
+trigger: confirmed malicious source IP
+actions:
+  - validate alert evidence
+  - add IP to firewall deny list
+  - monitor for repeated attempts
+  - document containment action
