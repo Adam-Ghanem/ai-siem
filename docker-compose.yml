@@ -1,18 +1,19 @@
 services:
-  api:
+  backend:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - APP_ENV=dev
-      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+      AI_SIEM_HOST: 0.0.0.0
+      AI_SIEM_PORT: 8000
+      AI_SIEM_ALLOWED_ORIGIN: http://localhost:5173
   frontend:
     image: node:22-alpine
     working_dir: /ui
     volumes:
       - ./frontend:/ui
-    command: sh -c "npm install && npm run dev"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      VITE_API_URL: http://localhost:8000

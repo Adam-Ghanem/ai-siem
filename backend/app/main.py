@@ -1,96 +1,97 @@
 from __future__ import annotations
+
 import os
-from fastapi import FastAPI, HTTPException
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from .parsers import parse_log
-from .detection import detect
-from .correlation import correlate
-from .anomaly import detect_anomalies
-from .rules import RULES
-from .sample_data import sample_logs
-from .models import NormalizedEvent
+from fastapi.responses import JSONResponse
 
-class IngestRequest(BaseModel):
-    logs: list[str] = []
-    events: list[NormalizedEvent] = []
+from backend.engine.rules import RULES
+from backend.engine.store import SIEMStore
 
-class TriageRequest(BaseModel):
-    incident_id: str | None = None
-    alert_id: str | None = None
-    action: str
-    analyst: str = 'analyst'
-    notes: str = ''
+HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
+PORT = int(os.getenv('AI_SIEM_PORT', '8000'))
+ALLOWED_ORIGIN = os.getenv('AI_SIEM_ALLOWED_ORIGIN', 'http://localhost:5173')
 
-app = FastAPI(title='AI-SIEM SOC Command Center', version='2.0.0')
-origins = [x.strip() for x in os.getenv('ALLOWED_ORIGINS','http://localhost:5173,http://localhost:3000').split(',')]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=['GET','POST'], allow_headers=['*'])
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.0.0')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in ALLOWED_ORIGIN.split(',') if origin.strip()],
+    allow_credentials=False,
+    allow_methods=['GET', 'POST'],
+    allow_headers=['content-type', 'authorization'],
+)
+store = SIEMStore()
 
-EVENTS: list[NormalizedEvent] = [parse_log(x) for x in sample_logs()]
-TRIAGE: list[dict] = []
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=400, content={'detail': 'Invalid request format', 'errors': exc.errors()})
 
-def current_state():
-    alerts = detect(EVENTS)
-    incidents = correlate(alerts)
-    anomalies = detect_anomalies(EVENTS)
-    return alerts, incidents, anomalies
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={'detail': str(exc)})
 
 @app.get('/api/health')
 def health():
-    return {'status':'ok','service':'AI-SIEM','events_loaded':len(EVENTS),'cors_origins':origins}
+    return {'status': 'ok', 'service': 'AI-SIEM', 'events_loaded': len(store.events), 'allowed_origin': ALLOWED_ORIGIN}
 
 @app.get('/api/events')
-def get_events(source: str | None = None, asset: str | None = None, user: str | None = None):
-    data = EVENTS
+def get_events(source: str | None = None, event_type: str | None = None, asset: str | None = None, user: str | None = None):
+    data = store.events
     if source: data = [e for e in data if e.source == source]
+    if event_type: data = [e for e in data if e.event_type == event_type]
     if asset: data = [e for e in data if e.asset == asset]
     if user: data = [e for e in data if e.user == user]
-    return data
+    return [e.to_dict() for e in data]
 
 @app.get('/api/alerts')
-def get_alerts(severity: str | None = None, asset: str | None = None, user: str | None = None, tactic: str | None = None):
-    data = current_state()[0]
+def get_alerts(severity: str | None = None, tactic: str | None = None, asset: str | None = None, user: str | None = None):
+    data = store.alerts()
     if severity: data = [a for a in data if a.severity == severity]
+    if tactic: data = [a for a in data if a.tactic == tactic]
     if asset: data = [a for a in data if a.asset == asset]
     if user: data = [a for a in data if a.user == user]
-    if tactic: data = [a for a in data if a.tactic == tactic]
-    return data
+    return [a.to_dict() for a in data]
 
 @app.get('/api/incidents')
 def get_incidents():
-    return current_state()[1]
+    return [i.to_dict() for i in store.incidents()]
 
 @app.get('/api/incidents/{incident_id}')
 def get_incident(incident_id: str):
-    for inc in current_state()[1]:
-        if inc.incident_id == incident_id:
-            return inc
+    for incident in store.incidents():
+        if incident.incident_id == incident_id:
+            return incident.to_dict()
     raise HTTPException(status_code=404, detail='Incident not found')
 
 @app.get('/api/rules')
 def get_rules():
     return RULES
 
-@app.get('/api/anomalies')
-def get_anomalies():
-    return current_state()[2]
-
 @app.get('/api/metrics')
 def get_metrics():
-    alerts, incidents, anomalies = current_state()
-    return {'total_events':len(EVENTS),'total_alerts':len(alerts),'total_incidents':len(incidents),'total_anomalies':len(anomalies),'critical_alerts':sum(1 for a in alerts if a.severity=='critical'),'high_alerts':sum(1 for a in alerts if a.severity=='high')}
+    return store.metrics()
+
+@app.get('/api/anomalies')
+def get_anomalies():
+    return [a.to_dict() for a in store.anomalies()]
 
 @app.post('/api/ingest')
-def ingest(payload: IngestRequest):
-    if not payload.logs and not payload.events:
-        raise HTTPException(status_code=400, detail='Provide logs or events')
-    parsed = [parse_log(x) for x in payload.logs] + payload.events
-    EVENTS.extend(parsed)
-    return {'ingested':len(parsed),'total_events':len(EVENTS)}
+async def ingest(request: Request):
+    try:
+        payload: Any = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    count = store.ingest(payload)
+    return {'ingested': count, 'total_events': len(store.events)}
 
 @app.post('/api/triage')
-def triage(payload: TriageRequest):
-    if not payload.incident_id and not payload.alert_id:
-        raise HTTPException(status_code=400, detail='incident_id or alert_id is required')
-    TRIAGE.append(payload.model_dump())
-    return {'status':'recorded','triage':payload.model_dump()}
+async def triage(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    record = store.triage(payload)
+    return record
