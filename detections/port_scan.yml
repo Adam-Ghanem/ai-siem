@@ -1,0 +1,8 @@
+id: DET-003
+title: Internal Port Scan
+severity: medium
+tactic: Discovery
+technique: T1046
+source: firewall
+logic: Detect many connection attempts to multiple ports or hosts within a short time window.
+recommendation: Identify the scanning host, validate whether the scan is authorized, and inspect for lateral movement indicators.
