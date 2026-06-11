@@ -1,0 +1,8 @@
+id: DET-002
+title: Suspicious PowerShell Execution
+severity: high
+tactic: Execution
+technique: T1059.001
+source: edr
+logic: encoded PowerShell command or suspicious parent-child process chain
+recommendation: Isolate endpoint, collect process tree, inspect persistence locations.
