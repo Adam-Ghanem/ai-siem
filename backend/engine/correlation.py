@@ -1,47 +1,70 @@
-def correlate_incidents(alerts):
-    """Group related alerts into realistic SOC incidents."""
-    incidents = []
+from __future__ import annotations
 
-    brute_force = [alert for alert in alerts if alert.get("tactic") == "Credential Access"]
-    execution = [alert for alert in alerts if alert.get("tactic") == "Execution"]
-    persistence = [alert for alert in alerts if alert.get("tactic") == "Persistence"]
+from uuid import uuid4
 
-    if brute_force:
-        incidents.append({
-            "id": "INC-219",
-            "title": "Suspected brute-force campaign",
-            "priority": "P1",
-            "status": "Investigating",
-            "owner": "SOC L1",
-            "related_alerts": len(brute_force) + 13,
-        })
+from .event_model import Alert, Incident
 
-    if execution:
-        incidents.append({
-            "id": "INC-218",
-            "title": "PowerShell execution chain",
-            "priority": "P2",
-            "status": "Containment",
-            "owner": "SOC L2",
-            "related_alerts": len(execution) + 5,
-        })
+SEV_WEIGHT = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
 
-    if persistence:
-        incidents.append({
-            "id": "INC-217",
-            "title": "Identity privilege change",
-            "priority": "P2",
-            "status": "Review",
-            "owner": "IR Team",
-            "related_alerts": len(persistence) + 3,
-        })
 
+def _close(a: Alert, b: Alert, minutes: int = 30) -> bool:
+    return abs((a.timestamp - b.timestamp).total_seconds()) <= minutes * 60
+
+
+def _related(a: Alert, b: Alert) -> bool:
+    return _close(a, b) and any([
+        a.asset and a.asset == b.asset,
+        a.user and a.user == b.user,
+        a.src_ip and a.src_ip == b.src_ip,
+        a.tactic == b.tactic,
+    ])
+
+
+def _priority(alerts: list[Alert]) -> str:
+    score = sum(SEV_WEIGHT.get(a.severity, 1) for a in alerts)
+    if any(a.severity == 'critical' for a in alerts) or score >= 8:
+        return 'P1'
+    if any(a.severity == 'high' for a in alerts) or score >= 5:
+        return 'P2'
+    return 'P3'
+
+
+def correlate_alerts(alerts: list[Alert]) -> list[Incident]:
+    incidents: list[Incident] = []
+    used: set[str] = set()
+    ordered = sorted(alerts, key=lambda a: a.timestamp)
+    for alert in ordered:
+        if alert.alert_id in used:
+            continue
+        group = [alert]
+        used.add(alert.alert_id)
+        changed = True
+        while changed:
+            changed = False
+            for other in ordered:
+                if other.alert_id in used:
+                    continue
+                if any(_related(other, member) for member in group):
+                    group.append(other)
+                    used.add(other.alert_id)
+                    changed = True
+        related_assets = sorted({a.asset for a in group if a.asset})
+        related_users = sorted({a.user for a in group if a.user})
+        related_src_ips = sorted({a.src_ip for a in group if a.src_ip})
+        timeline = [{'timestamp': a.timestamp.isoformat(), 'alert_id': a.alert_id, 'title': a.title, 'severity': a.severity, 'asset': a.asset, 'user': a.user, 'src_ip': a.src_ip, 'tactic': a.tactic} for a in group]
+        title = group[0].title if len(group) == 1 else f"Correlated activity: {', '.join(sorted({a.tactic for a in group}))}"
+        incidents.append(Incident(
+            incident_id=f"INC-{uuid4().hex[:10]}",
+            title=title,
+            priority=_priority(group),
+            status='open',
+            owner='unassigned',
+            related_alert_ids=[a.alert_id for a in group],
+            related_assets=related_assets,
+            related_users=related_users,
+            related_src_ips=related_src_ips,
+            evidence_summary=' | '.join(sorted({a.title for a in group})),
+            timeline=timeline,
+            recommended_actions=sorted({a.recommended_action for a in group}),
+        ))
     return incidents
-
-
-def calculate_risk_score(alerts, incidents):
-    score = 35
-    score += len([a for a in alerts if a.get("severity") == "Critical"]) * 25
-    score += len([a for a in alerts if a.get("severity") == "High"]) * 10
-    score += len(incidents) * 4
-    return min(score, 100)
