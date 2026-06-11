@@ -1,0 +1,6 @@
+{
+  "id": "dash-incident-response",
+  "title": "Incident Response",
+  "description": "Tracks open incidents, owners, status, priority, and response workflow.",
+  "widgets": ["incident_queue", "timeline", "owners", "response_actions"]
+}
