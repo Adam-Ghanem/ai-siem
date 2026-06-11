@@ -1,0 +1,42 @@
+[
+  {
+    "timestamp": "2026-06-11T20:58:00Z",
+    "title": "Multiple failed SSH attempts from external IP",
+    "source": "Linux Auth",
+    "asset": "srv-prod-01",
+    "message": "failed ssh login brute force detected from 185.71.67.12",
+    "recommendation": "Block the source IP, review successful logins, rotate exposed credentials, and enforce MFA."
+  },
+  {
+    "timestamp": "2026-06-11T20:46:00Z",
+    "title": "Encoded PowerShell command execution",
+    "source": "EDR",
+    "asset": "win-fin-07",
+    "message": "powershell encoded command observed with suspicious execution chain",
+    "recommendation": "Isolate endpoint, collect process tree, review parent process, and inspect persistence locations."
+  },
+  {
+    "timestamp": "2026-06-11T20:34:00Z",
+    "title": "Unusual admin account creation",
+    "source": "Azure AD",
+    "asset": "AD-DC-01",
+    "message": "admin account created outside normal change window",
+    "recommendation": "Disable the account, review creator identity, audit group changes, and validate change ticket."
+  },
+  {
+    "timestamp": "2026-06-11T20:17:00Z",
+    "title": "Port scan against internal subnet",
+    "source": "Fortinet Firewall",
+    "asset": "10.20.4.0/24",
+    "message": "port scan detected against multiple internal hosts",
+    "recommendation": "Identify scanning host, isolate if unauthorized, and review lateral movement indicators."
+  },
+  {
+    "timestamp": "2026-06-11T20:02:00Z",
+    "title": "SQL injection attempt against web application",
+    "source": "WAF",
+    "asset": "web-prod-03",
+    "message": "sql injection attempt detected in HTTP query string",
+    "recommendation": "Block attacking IP, review WAF logs, validate application input filtering, and inspect database access logs."
+  }
+]
