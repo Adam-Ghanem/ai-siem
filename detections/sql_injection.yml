@@ -1,0 +1,8 @@
+id: DET-005
+title: SQL Injection Attempt
+severity: high
+tactic: Initial Access
+technique: T1190
+source: waf
+logic: suspicious SQL keywords or payload patterns in HTTP request parameters
+recommendation: Block source IP, review WAF event, validate input filtering, inspect database logs.
