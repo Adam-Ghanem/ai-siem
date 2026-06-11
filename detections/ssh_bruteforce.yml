@@ -1,0 +1,8 @@
+id: DET-001
+title: SSH Brute Force
+severity: high
+tactic: Credential Access
+technique: T1110
+source: linux_auth
+logic: multiple failed ssh login attempts from the same source IP
+recommendation: Block source IP, review successful logins, rotate exposed credentials, enforce MFA.
