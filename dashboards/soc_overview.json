@@ -1,0 +1,6 @@
+{
+  "id": "dash-soc-overview",
+  "title": "SOC Overview",
+  "description": "High-level view of telemetry volume, critical alerts, incidents, and risk score.",
+  "widgets": ["total_events", "critical_alerts", "open_incidents", "risk_score", "alert_activity"]
+}
