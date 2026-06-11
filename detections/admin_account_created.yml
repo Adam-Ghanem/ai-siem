@@ -1,0 +1,8 @@
+id: DET-004
+title: Admin Account Created
+severity: high
+tactic: Persistence
+technique: T1136
+source: identity
+logic: privileged account created outside normal administration window
+recommendation: Disable account until validated, review creator identity, audit privileged groups.
