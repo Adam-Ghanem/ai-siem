@@ -12,7 +12,7 @@ from .metrics import calculate_metrics
 from .parser_v2 import parse_events
 
 ROOT = Path(__file__).resolve().parents[2]
-DATA_FILE = ROOT.parent / 'data' / 'sample_logs.json'
+DATA_FILE = ROOT / 'data' / 'sample_logs.json'
 
 class SIEMStore:
     def __init__(self) -> None:
@@ -55,6 +55,8 @@ class SIEMStore:
         return calculate_metrics(self.events, alerts, incidents)
 
     def triage(self, record: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(record, dict):
+            raise ValueError('triage body must be a JSON object')
         if not record.get('incident_id') and not record.get('alert_id'):
             raise ValueError('triage requires incident_id or alert_id')
         if not record.get('action'):
