@@ -1,10 +1,19 @@
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(CURRENT_DIR)
+sys.path.insert(0, CURRENT_DIR)
+
+from engine.parser import normalize_events
+from engine.detections import DETECTIONS, generate_alerts
+from engine.correlation import correlate_incidents, calculate_risk_score
+from engine.triage import select_highest_risk_alert, build_triage
+
 HOST = '0.0.0.0'
 PORT = 8000
 
@@ -17,67 +26,16 @@ def load_json(path, fallback):
         return fallback
 
 
-LOGS = load_json('data/sample_logs.json', [])
-
-DETECTIONS = [
-    {'id': 'DET-001', 'name': 'SSH Brute Force', 'severity': 'High', 'tactic': 'Credential Access', 'technique': 'T1110'},
-    {'id': 'DET-002', 'name': 'Suspicious PowerShell', 'severity': 'High', 'tactic': 'Execution', 'technique': 'T1059.001'},
-    {'id': 'DET-003', 'name': 'Port Scan', 'severity': 'Medium', 'tactic': 'Discovery', 'technique': 'T1046'},
-    {'id': 'DET-004', 'name': 'Admin Account Created', 'severity': 'High', 'tactic': 'Persistence', 'technique': 'T1136'},
-    {'id': 'DET-005', 'name': 'SQL Injection Attempt', 'severity': 'High', 'tactic': 'Initial Access', 'technique': 'T1190'},
-]
+def load_logs():
+    return normalize_events(load_json('data/sample_logs.json', []))
 
 
 def build_alerts():
-    alerts = []
-    for idx, event in enumerate(LOGS, 1):
-        message = event.get('message', '').lower()
-        source = event.get('source', 'unknown')
-        asset = event.get('asset', 'unknown')
-        if 'failed ssh' in message or 'brute force' in message:
-            rule = DETECTIONS[0]
-            status = 'New'
-            confidence = 94
-        elif 'powershell' in message:
-            rule = DETECTIONS[1]
-            status = 'Investigating'
-            confidence = 88
-        elif 'port scan' in message:
-            rule = DETECTIONS[2]
-            status = 'Contained'
-            confidence = 76
-        elif 'admin account' in message:
-            rule = DETECTIONS[3]
-            status = 'Escalated'
-            confidence = 82
-        elif 'sql injection' in message or 'sqli' in message:
-            rule = DETECTIONS[4]
-            status = 'New'
-            confidence = 84
-        else:
-            continue
-        alerts.append({
-            'id': f'ALT-{1040 + idx}',
-            'title': event.get('title', rule['name']),
-            'severity': 'Critical' if rule['name'] == 'SSH Brute Force' else rule['severity'],
-            'confidence': confidence,
-            'source': source,
-            'asset': asset,
-            'tactic': rule['tactic'],
-            'technique': rule['technique'],
-            'status': status,
-            'timestamp': event.get('timestamp'),
-            'recommendation': event.get('recommendation', 'Review evidence, validate asset context, and escalate if confirmed.'),
-        })
-    return alerts
+    return generate_alerts(load_logs())
 
 
 def build_incidents():
-    return [
-        {'id': 'INC-219', 'title': 'Suspected brute-force campaign', 'priority': 'P1', 'status': 'Investigating', 'owner': 'SOC L1', 'related_alerts': 14},
-        {'id': 'INC-218', 'title': 'PowerShell execution chain', 'priority': 'P2', 'status': 'Containment', 'owner': 'SOC L2', 'related_alerts': 6},
-        {'id': 'INC-217', 'title': 'Identity privilege change', 'priority': 'P2', 'status': 'Review', 'owner': 'IR Team', 'related_alerts': 4},
-    ]
+    return correlate_incidents(build_alerts())
 
 
 def integrations():
@@ -99,27 +57,27 @@ def workflows():
 
 
 def metrics():
+    logs = load_logs()
     alerts = build_alerts()
+    incidents = build_incidents()
     return {
-        'total_events': len(LOGS) * 8500 + 700,
+        'total_events': len(logs) * 8500 + 700,
         'critical_alerts': len([a for a in alerts if a['severity'] == 'Critical']),
-        'open_incidents': len(build_incidents()),
-        'risk_score': 72,
+        'open_incidents': len(incidents),
+        'risk_score': calculate_risk_score(alerts, incidents),
         'mean_time_to_respond': '17m',
     }
 
 
 def triage(payload):
     alerts = build_alerts()
-    top = sorted(alerts, key=lambda x: (x['severity'] == 'Critical', x['confidence']), reverse=True)[0]
-    return {
-        'alert_id': top['id'],
-        'severity': top['severity'],
-        'assessment': f"{top['title']} detected on {top['asset']} from {top['source']}. Confidence is {top['confidence']}%.",
-        'mitre_tactic': top['tactic'],
-        'mitre_technique': top['technique'],
-        'recommended_actions': [top['recommendation'], 'Validate affected asset and user context', 'Check related alerts and recent authentication activity', 'Document response actions in the incident record'],
-    }
+    alert_id = payload.get('alert_id') if isinstance(payload, dict) else None
+    selected = None
+    if alert_id:
+        selected = next((alert for alert in alerts if alert.get('id') == alert_id), None)
+    if not selected:
+        selected = select_highest_risk_alert(alerts)
+    return build_triage(selected)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -138,19 +96,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ['/', '/api']:
-            return self.send_json({'service': 'AI-SIEM API', 'status': 'healthy', 'time': datetime.now(timezone.utc).isoformat()})
+            return self.send_json({
+                'service': 'AI-SIEM API',
+                'status': 'healthy',
+                'time': datetime.now(timezone.utc).isoformat(),
+                'endpoints': ['/api/health', '/api/metrics', '/api/logs', '/api/alerts', '/api/incidents', '/api/detections', '/api/parsers', '/api/dashboards', '/api/workflows', '/api/triage'],
+            })
         if path == '/api/health': return self.send_json({'status': 'healthy'})
         if path == '/api/metrics': return self.send_json(metrics())
-        if path == '/api/logs': return self.send_json(LOGS)
+        if path == '/api/logs': return self.send_json(load_logs())
         if path == '/api/alerts': return self.send_json(build_alerts())
         if path == '/api/incidents': return self.send_json(build_incidents())
-        if path == '/api/detections': return self.send_json(DETECTIONS)
+        if path == '/api/detections': return self.send_json([{k: v for k, v in item.items() if k != 'keywords'} for item in DETECTIONS])
         if path == '/api/parsers': return self.send_json(['linux_auth', 'windows_event', 'firewall_syslog', 'cloudtrail'])
         if path == '/api/dashboards': return self.send_json(['soc_overview', 'mitre_coverage', 'incident_response'])
         if path == '/api/workflows': return self.send_json(workflows())
         if path == '/api/integrations': return self.send_json(integrations())
-        if path == '/api/rules': return self.send_json(DETECTIONS)
-        if path == '/api/reports/summary': return self.send_json({'title': 'Weekly SOC Summary', 'critical_findings': 3, 'open_incidents': 3, 'top_tactic': 'Credential Access'})
+        if path == '/api/rules': return self.send_json([{k: v for k, v in item.items() if k != 'keywords'} for item in DETECTIONS])
+        if path == '/api/reports/summary': return self.send_json({'title': 'Weekly SOC Summary', 'critical_findings': 3, 'open_incidents': len(build_incidents()), 'top_tactic': 'Credential Access'})
         return self.send_json({'error': 'not found', 'path': path}, 404)
 
     def do_POST(self):
