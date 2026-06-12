@@ -2,15 +2,32 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from statistics import mean, pstdev
 from uuid import uuid4
+from ipaddress import ip_address
 from .models import Anomaly, Event
+
+MIN_BASELINE_SOURCES = 3
+MAX_RARE_SOURCE_ANOMALIES_PER_USER = 1
+MIN_RARE_SOURCE_SCORE = .80
+
 
 def _z(v, vals):
     if len(vals)<2: return 0.0
     sd=pstdev(vals)
     return 0.0 if sd==0 else max(0.0,(v-mean(vals))/sd)
 
+
+def _is_external_ip(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        ip = ip_address(value)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+
+
 def detect_anomalies(events:list[Event])->list[Anomaly]:
-    out=[]; by_asset=Counter(e.asset for e in events if e.asset); fails=Counter((e.user,e.src_ip) for e in events if e.event_type=='ssh_login' and e.status=='failure'); seen_src=defaultdict(set); seen_proc=defaultdict(set)
+    out=[]; by_asset=Counter(e.asset for e in events if e.asset); fails=Counter((e.user,e.src_ip) for e in events if e.event_type=='ssh_login' and e.status=='failure'); seen_src=defaultdict(set); seen_proc=defaultdict(set); rare_src_counts=Counter()
     vals=list(by_asset.values())
     for asset,count in by_asset.items():
         z=_z(count,vals)
@@ -23,11 +40,15 @@ def detect_anomalies(events:list[Event])->list[Anomaly]:
     for e in sorted(events,key=lambda x:x.timestamp):
         if e.user and e.src_ip and e.status=='success':
             known=seen_src[e.user]
-            if known and e.src_ip not in known: out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,.72,f'Rare source IP {e.src_ip} for user {e.user}',{'src_ip':e.src_ip,'known_sources':sorted(known)},[e.id],'Validate VPN/travel context and check for credential theft.'))
+            is_rare_external=_is_external_ip(e.src_ip)
+            has_baseline=len(known)>=MIN_BASELINE_SOURCES
+            if has_baseline and is_rare_external and e.src_ip not in known and rare_src_counts[e.user]<MAX_RARE_SOURCE_ANOMALIES_PER_USER:
+                rare_src_counts[e.user]+=1
+                out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,MIN_RARE_SOURCE_SCORE,f'Rare external source IP {e.src_ip} for user {e.user}',{'src_ip':e.src_ip,'known_sources':sorted(known)},[e.id],'Validate VPN/travel context and check for credential theft.'))
             known.add(e.src_ip)
         if e.user in {'root','admin','administrator'} and e.status=='success' and (e.timestamp.hour<7 or e.timestamp.hour>=20): out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,.76,'Privileged access outside business hours',{'hour':e.timestamp.hour,'asset':e.asset,'src_ip':e.src_ip},[e.id],'Confirm approval and review session commands.'))
         if e.process_name and e.command_line:
             ent=e.user or e.asset or 'unknown'; proc=e.process_name.lower(); known=seen_proc[ent]
             if known and proc not in known and any(x in e.command_line.lower() for x in ['-enc','downloadstring','frombase64string']): out.append(Anomaly(f"AN-{uuid4().hex[:10]}",ent,.81,f'Unusual command usage: {e.process_name}',{'process':e.process_name,'command_line':e.command_line[:200]},[e.id],'Collect process tree and endpoint telemetry.'))
             known.add(proc)
-    return out
+    return sorted(out, key=lambda a: a.anomaly_score, reverse=True)[:20]
