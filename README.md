@@ -16,52 +16,94 @@ flowchart LR
     F --> G[Incidents]
     C --> H[Explainable anomaly scoring]
     C --> I[Metrics engine]
-    E --> I
-    G --> I
     I --> J[FastAPI endpoints]
-    E --> J
-    G --> J
-    H --> J
     J --> K[Frontend SOC dashboard]
 ```
-
-The backend is intentionally modular:
-
-- `backend/parser.py` normalizes Linux auth, Windows/PowerShell, firewall, WAF, and JSON events.
-- `backend/detection.py` applies rule, threshold, time-window, regex, and group-by logic.
-- `backend/correlation.py` groups related alerts into incidents.
-- `backend/anomaly.py` creates lightweight explainable anomaly findings.
-- `backend/metrics.py` calculates dashboard metrics from actual loaded events, alerts, and incidents.
-- `backend/main.py` exposes the FastAPI application and API routes.
 
 ## Main features
 
 - FastAPI backend with SOC-focused endpoints.
-- Safe sample telemetry under `data/sample_logs.json`.
-- Normalized event model for mixed log sources.
+- Bearer-token API authentication with `AI_SIEM_API_KEY`.
+- Environment-configured CORS, defaulting to `http://localhost:5173`.
+- Ingest limits for request size, log size, and total in-memory events.
+- Simple in-memory per-IP rate limiting.
+- Audit logging to `logs/audit.log` without logging secrets.
+- Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
+- Alert suppression window to reduce duplicate alerts.
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
 - Metrics calculated from actual in-memory state, not hardcoded demo numbers.
-- Frontend dashboard using the current FastAPI response shapes.
-- Docker Compose support.
-- `unittest` test suite covering parser, detection, correlation, anomaly, metrics, and API behavior.
+- Docker Compose support and security CI.
+
+## Security Model
+
+All endpoints except `GET /api/health` require:
+
+```http
+Authorization: Bearer <token>
+```
+
+Set the key before running the backend:
+
+```bash
+export AI_SIEM_API_KEY='dev-token'
+```
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $AI_SIEM_API_KEY" http://localhost:8000/api/events
+```
+
+The frontend optionally reads the token from browser localStorage:
+
+```js
+localStorage.setItem('AI_SIEM_API_KEY', 'dev-token')
+```
+
+This localStorage pattern is acceptable for this portfolio lab, but should not be used as-is for a high-security production deployment.
+
+## Rate limits and ingest limits
+
+Defaults:
+
+- Global rate limit: `60` requests/minute per IP via `AI_SIEM_RATE_LIMIT_PER_MINUTE`.
+- Ingest rate limit: `10` ingest requests/minute per IP via `AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE`.
+- Max events per ingest request: `100` via `AI_SIEM_MAX_EVENTS_PER_INGEST`.
+- Max raw log size per item: `10 KB` via `AI_SIEM_MAX_RAW_LOG_BYTES`.
+- Max in-memory events: `10,000` via `AI_SIEM_MAX_IN_MEMORY_EVENTS`.
+
+Limit violations return `413` or `429` with clear error messages.
+
+## Audit logging
+
+Security-relevant events are logged to `logs/audit.log` by default:
+
+- auth failures
+- rate-limit failures
+- ingest actions
+- triage actions
+- validation failures
+
+Audit lines include timestamp, client IP, endpoint, action, and result. Full Authorization headers and secrets are not logged.
 
 ## API endpoints
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Backend status and loaded event count |
-| `GET` | `/api/events` | Normalized events with optional filters |
-| `GET` | `/api/alerts` | Alerts produced by detection logic |
-| `GET` | `/api/incidents` | Correlated incidents |
-| `GET` | `/api/incidents/{incident_id}` | One incident by ID |
-| `GET` | `/api/rules` | Detection rule definitions |
-| `GET` | `/api/metrics` | SOC metrics and distributions |
-| `GET` | `/api/anomalies` | Explainable anomaly findings |
-| `GET` | `/api/triage` | Recorded triage actions |
-| `POST` | `/api/ingest` | Ingest one event/log or a list of events/logs |
-| `POST` | `/api/triage` | Record an analyst triage action |
+| Method | Endpoint | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/health` | public | Backend status |
+| `GET` | `/api/events` | required | Normalized events |
+| `GET` | `/api/alerts` | required | Detection alerts |
+| `GET` | `/api/incidents` | required | Correlated incidents |
+| `GET` | `/api/incidents/{incident_id}` | required | One incident by ID |
+| `GET` | `/api/rules` | required | Rule definitions |
+| `GET` | `/api/metrics` | required | SOC metrics and parser failure count |
+| `GET` | `/api/anomalies` | required | Explainable anomalies |
+| `GET` | `/api/parser/stats` | required | Parser visibility stats |
+| `GET` | `/api/triage` | required | Recorded triage actions |
+| `POST` | `/api/ingest` | required | Ingest events/logs |
+| `POST` | `/api/triage` | required | Record analyst triage |
 
 ## Detection coverage
 
@@ -76,118 +118,65 @@ The backend is intentionally modular:
 | `DET-AI-001` | Rare source IP for user | Medium | Initial Access | `T1078` |
 | `DET-AI-002` | Off-hours privileged access | Medium | Privilege Escalation | `T1078` |
 
-## Anomaly detection
-
-The anomaly layer is intentionally lightweight and explainable. It is not a black-box ML model. It currently looks for patterns such as:
-
-- High failed-login volume for the same user/source pair.
-- Rare source IP for a previously observed user.
-- Privileged access outside normal working hours.
-- Unusual command usage when a new process appears with suspicious command-line indicators.
-- Unusual event volume for a noisy asset.
-
-Each anomaly includes an `anomaly_score`, a human-readable `reason`, `contributing_features`, related event IDs, and a recommended action.
-
 ## Run locally
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+export AI_SIEM_API_KEY='dev-token'
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Backend: `http://localhost:8000`
 
-Frontend can be opened from `frontend/index.html` or served with any static file server. The frontend uses `http://localhost:8000` by default. To point it somewhere else:
+Frontend can be opened from `frontend/index.html`. Configure the API URL and token:
 
 ```js
 localStorage.setItem('AI_SIEM_API', 'http://localhost:8000')
+localStorage.setItem('AI_SIEM_API_KEY', 'dev-token')
 ```
 
 ## Run with Docker
 
 ```bash
+export AI_SIEM_API_KEY='dev-token'
 docker compose up --build
 ```
 
-Backend: `http://localhost:8000`
-Frontend: `http://localhost:5173`
+Docker hardening notes:
 
-## Run tests
+- Uses `python:3.11-slim`.
+- Runs as a non-root `appuser`.
+- Adds `HEALTHCHECK` for `/api/health`.
+- Uses `.dockerignore` to keep secrets, Git metadata, logs, venvs, and node modules out of the build context.
+
+## Run tests and security checks
 
 ```bash
-python -m unittest discover tests -v
 python -m compileall backend tests
+AI_SIEM_API_KEY=test-token AI_SIEM_RATE_LIMIT_PER_MINUTE=1000 AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE=1000 python -m unittest discover tests -v
+bandit -q -r backend -lll
+pip-audit -r requirements.txt
 ```
 
-The test suite validates:
-
-- FastAPI health, events, metrics, alerts, anomalies, incidents, ingest, and triage endpoints.
-- Parser behavior for Linux auth, Windows PowerShell, firewall, WAF, JSON, and invalid logs.
-- Detection behavior for brute force, success-after-failure, PowerShell, port scan, SQL injection, and benign events.
-- Correlation behavior for related and unrelated alerts.
-- Anomaly behavior for failed-login volume, rare source IP, off-hours privileged access, and benign events.
-- Metrics behavior for total event count, risk score, and distributions.
-
-## Example ingest request
-
-```bash
-curl -X POST http://localhost:8000/api/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source": "linux_auth",
-    "event_type": "ssh_login",
-    "asset": "jumpbox01",
-    "user": "analyst",
-    "src_ip": "192.0.2.50",
-    "status": "success",
-    "message": "Accepted password for analyst from 192.0.2.50"
-  }'
-```
-
-The API also accepts a list of events or a wrapper object such as `{ "events": [...] }` or `{ "logs": [...] }`.
-
-## Screenshots
-
-Add screenshots after running the dashboard locally:
-
-- Dashboard overview.
-- Alert queue with MITRE mappings.
-- Incident lifecycle view.
-- Anomaly review view.
-- Detection rules view.
-
-Keep screenshots lightweight and avoid committing sensitive data or large binary files.
-
-## Security notes
-
-- No secrets, tokens, real company logs, or credentials are required.
-- Sample data is synthetic and safe for public portfolio use.
-- Ingestion validates event shape and returns `400` for invalid JSON or invalid event format.
-- The backend does not execute shell commands, deserialize unsafe objects, or use `eval`/`exec`.
-- CORS is environment-configured and is not wildcard by default.
-- Storage is in memory only; restarting the backend reloads sample data.
+The CI workflow runs compile checks, unit tests, Bandit, and pip-audit.
 
 ## Limitations
 
-- In-memory state only; no database persistence yet.
-- No authentication, authorization, API keys, or multi-user roles yet.
-- Parsers are practical portfolio examples, not full ECS/OCSF/Sigma coverage.
-- Incident and alert workflows are simplified for demonstration.
-- Anomaly detection is statistical and explainable, not enterprise-grade ML.
-- Frontend is a lightweight dashboard, not a complete SOC case-management UI.
+- In-memory storage only; data is lost on restart.
+- No database persistence.
+- No RBAC or multi-user authorization model.
+- No production deployment hardening such as TLS termination, secrets manager integration, or distributed rate limiting.
+- Parsers are practical examples, not full ECS/OCSF coverage.
+- No Sigma rule import/export yet.
+- Anomaly detection is explainable/statistical, not enterprise ML.
 
 ## Roadmap
 
-- Add SQLite or PostgreSQL persistence.
-- Add API authentication and analyst roles.
-- Add Sigma rule import/export.
-- Add ECS or OCSF mapping mode.
-- Add rule tuning, suppression, and false-positive tracking.
-- Add incident notes and immutable audit trail.
-- Add report export for incidents and weekly SOC summaries.
-
-## Portfolio positioning
-
-**CV-ready description:** Built a defensive SOC / AI-SIEM portfolio platform using FastAPI that parses mixed security logs, normalizes events, runs MITRE-mapped detection logic, correlates alerts into incidents, generates explainable anomaly findings, calculates live SOC metrics, exposes REST API endpoints, and includes a tested dashboard-compatible backend with Docker and CI validation.
+- Add SQLite/PostgreSQL persistence.
+- Add RBAC and API key management.
+- Add ECS/OCSF mapping.
+- Add Sigma import/export.
+- Add analyst notes and audit trail persistence.
+- Add rule suppression/tuning workflow.
