@@ -212,6 +212,7 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 |---|---|---:|---|---|
 | `DET-SSH-001` | SSH brute force from one source IP | High | Credential Access | `T1110` |
 | `DET-SSH-002` | Successful login after multiple failures | High | Initial Access | `T1078` |
+| `DET-SSH-003` | SSH password spraying across multiple users from one source IP | High | Credential Access | `T1110.003` |
 | `DET-PS-001` | Encoded or suspicious PowerShell execution | Critical | Execution | `T1059.001` |
 | `DET-NET-001` | Internal port scan across multiple destinations | Medium | Discovery | `T1046` |
 | `DET-WIN-001` | Admin account creation or group change | Critical | Persistence | `T1136` |
