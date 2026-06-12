@@ -6,8 +6,10 @@ from typing import Any
 
 from .anomaly import detect_anomalies
 from .correlation import correlate_alerts
+from .coverage import mitre_coverage
 from .detection import run_detections
 from .event_model import NormalizedEvent
+from .export import soc_snapshot
 from .metrics import calculate_metrics
 from .parser_v2 import parse_events
 
@@ -53,6 +55,16 @@ class SIEMStore:
         alerts = self.alerts()
         incidents = self.incidents()
         return calculate_metrics(self.events, alerts, incidents)
+
+    def coverage(self):
+        return mitre_coverage(self.alerts())
+
+    def snapshot(self):
+        alerts = self.alerts()
+        incidents = correlate_alerts(alerts)
+        anomalies = detect_anomalies(self.events)
+        metrics = calculate_metrics(self.events, alerts, incidents)
+        return soc_snapshot(self.events, alerts, incidents, anomalies, metrics)
 
     def triage(self, record: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(record, dict):

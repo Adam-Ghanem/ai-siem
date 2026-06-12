@@ -15,7 +15,7 @@ HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
 PORT = int(os.getenv('AI_SIEM_PORT', '8000'))
 ALLOWED_ORIGIN = os.getenv('AI_SIEM_ALLOWED_ORIGIN', 'http://localhost:5173')
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.0.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.1.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in ALLOWED_ORIGIN.split(',') if origin.strip()],
@@ -35,24 +35,26 @@ async def value_error_handler(request: Request, exc: ValueError):
 
 @app.get('/api/health')
 def health():
-    return {'status': 'ok', 'service': 'AI-SIEM', 'events_loaded': len(store.events), 'allowed_origin': ALLOWED_ORIGIN}
+    return {'status': 'ok', 'service': 'AI-SIEM', 'version': '3.1.0', 'events_loaded': len(store.events), 'allowed_origin': ALLOWED_ORIGIN}
 
 @app.get('/api/events')
-def get_events(source: str | None = None, event_type: str | None = None, asset: str | None = None, user: str | None = None):
+def get_events(source: str | None = None, event_type: str | None = None, asset: str | None = None, user: str | None = None, src_ip: str | None = None):
     data = store.events
     if source: data = [e for e in data if e.source == source]
     if event_type: data = [e for e in data if e.event_type == event_type]
     if asset: data = [e for e in data if e.asset == asset]
     if user: data = [e for e in data if e.user == user]
+    if src_ip: data = [e for e in data if e.src_ip == src_ip]
     return [e.to_dict() for e in data]
 
 @app.get('/api/alerts')
-def get_alerts(severity: str | None = None, tactic: str | None = None, asset: str | None = None, user: str | None = None):
+def get_alerts(severity: str | None = None, tactic: str | None = None, asset: str | None = None, user: str | None = None, src_ip: str | None = None):
     data = store.alerts()
     if severity: data = [a for a in data if a.severity == severity]
     if tactic: data = [a for a in data if a.tactic == tactic]
     if asset: data = [a for a in data if a.asset == asset]
     if user: data = [a for a in data if a.user == user]
+    if src_ip: data = [a for a in data if a.src_ip == src_ip]
     return [a.to_dict() for a in data]
 
 @app.get('/api/incidents')
@@ -70,6 +72,13 @@ def get_incident(incident_id: str):
 def get_rules():
     return RULES
 
+@app.get('/api/rules/{rule_id}')
+def get_rule(rule_id: str):
+    for rule in RULES:
+        if rule['rule_id'] == rule_id:
+            return rule
+    raise HTTPException(status_code=404, detail='Rule not found')
+
 @app.get('/api/metrics')
 def get_metrics():
     return store.metrics()
@@ -77,6 +86,18 @@ def get_metrics():
 @app.get('/api/anomalies')
 def get_anomalies():
     return [a.to_dict() for a in store.anomalies()]
+
+@app.get('/api/mitre')
+def get_mitre_coverage():
+    return store.coverage()
+
+@app.get('/api/triage')
+def get_triage_records():
+    return store.triage_records
+
+@app.get('/api/export')
+def export_snapshot():
+    return store.snapshot()
 
 @app.post('/api/ingest')
 async def ingest(request: Request):
