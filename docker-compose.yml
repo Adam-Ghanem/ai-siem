@@ -7,6 +7,9 @@ services:
       AI_SIEM_HOST: 0.0.0.0
       AI_SIEM_PORT: 8000
       AI_SIEM_ALLOWED_ORIGIN: http://localhost:5173
+      AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:-dev-token}
+      AI_SIEM_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_RATE_LIMIT_PER_MINUTE:-60}
+      AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE:-10}
   frontend:
     image: node:22-alpine
     working_dir: /ui
