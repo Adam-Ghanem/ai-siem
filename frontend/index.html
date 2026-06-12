@@ -15,9 +15,10 @@
         <button class="active" data-view="dashboard">Dashboard</button>
         <button data-view="alerts">Alerts</button>
         <button data-view="incidents">Incidents</button>
+        <button data-view="anomalies">Anomalies</button>
         <button data-view="analysis">Live Analysis</button>
-        <button data-view="detections">Detections</button>
-        <button data-view="content">Content Library</button>
+        <button data-view="detections">Rules</button>
+        <button data-view="content">Metrics</button>
         <button data-view="reports">Reports</button>
       </nav>
       <div class="status-card">
@@ -28,46 +29,38 @@
 
     <main class="main">
       <header class="topbar">
-        <div>
-          <span class="label">Security Operations Command Center</span>
-          <h1 id="view-title">Dashboard</h1>
-        </div>
-        <div class="actions">
-          <div class="clock" id="clock">--:--:--</div>
-          <button id="refresh" class="btn ghost">Refresh</button>
-          <button id="run-analysis" class="btn primary">Run Live Analysis</button>
-        </div>
+        <div><span class="label">Security Operations Command Center</span><h1 id="view-title">Dashboard</h1></div>
+        <div class="actions"><div class="clock" id="clock">--:--:--</div><button id="refresh" class="btn ghost">Refresh</button><button id="run-analysis" class="btn primary">Run Live Analysis</button></div>
       </header>
 
       <section id="dashboard" class="view active">
         <div class="soc-strip">
-          <div><span>Environment</span><strong>Production SOC</strong></div>
-          <div><span>Mode</span><strong id="soc-mode">Live Monitor</strong></div>
-          <div><span>Source</span><strong id="soc-source">Backend API</strong></div>
+          <div><span>Environment</span><strong>Portfolio SOC Lab</strong></div>
+          <div><span>Mode</span><strong id="soc-mode">Live data</strong></div>
+          <div><span>Source</span><strong id="soc-source">FastAPI backend</strong></div>
           <div><span>Last Refresh</span><strong id="last-refresh">Pending</strong></div>
         </div>
-
         <div class="kpis">
-          <div class="kpi"><span>Total Events</span><strong id="metric-events">--</strong><em>Telemetry volume</em></div>
-          <div class="kpi"><span>Critical Alerts</span><strong id="metric-critical">--</strong><em>High priority</em></div>
-          <div class="kpi"><span>Open Incidents</span><strong id="metric-incidents">--</strong><em>Active cases</em></div>
-          <div class="kpi"><span>Risk Score</span><strong id="metric-risk">--</strong><em>Security posture</em></div>
+          <div class="kpi"><span>Total Events</span><strong id="metric-events">--</strong><em>Loaded telemetry</em></div>
+          <div class="kpi"><span>Critical Alerts</span><strong id="metric-critical">--</strong><em>Highest severity</em></div>
+          <div class="kpi"><span>Open Incidents</span><strong id="metric-incidents">--</strong><em>Correlated cases</em></div>
+          <div class="kpi"><span>Risk Score</span><strong id="metric-risk">--</strong><em>Explainable score</em></div>
         </div>
-
         <div class="grid">
-          <article class="panel wide"><h3>Alert Activity</h3><p>Detection volume by time window.</p><div class="bars" id="bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></article>
-          <article class="panel"><h3>Severity Distribution</h3><p>Current alert pressure.</p><div class="donut"><strong id="open-alerts">--</strong><small>Open alerts</small></div></article>
+          <article class="panel wide"><h3>Alert Activity</h3><p>Detection volume by refresh window.</p><div class="bars" id="bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></article>
+          <article class="panel"><h3>Alert Queue</h3><p>Current detection count.</p><div class="donut"><strong id="open-alerts">--</strong><small>alerts</small></div></article>
           <article class="panel"><h3>MITRE Coverage</h3><p>Active tactics.</p><div class="mitre" id="mitre"></div></article>
           <article class="panel full"><h3>Threat Narrative</h3><p>Current analyst summary from the active queue.</p><div class="analysis-box" id="narrative"><strong>Loading...</strong><span>Waiting for telemetry.</span></div></article>
         </div>
       </section>
 
-      <section id="alerts" class="view"><article class="panel full"><h3>Alert Queue</h3><p>Prioritized detections.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Alert</th><th>Severity</th><th>Confidence</th><th>Source</th><th>Asset</th><th>MITRE</th><th>Status</th></tr></thead><tbody id="alerts-body"></tbody></table></div></article></section>
-      <section id="incidents" class="view"><article class="panel full"><h3>Incident Lifecycle</h3><p>Correlated investigations.</p><div id="incidents-list"></div></article></section>
-      <section id="analysis" class="view"><div class="stack"><article class="panel full"><h3>Live Analysis</h3><p>Automated assessment of the highest-risk alert.</p><div class="analysis-box" id="analysis-box"><strong>Waiting for analysis...</strong><span>Click Run Live Analysis.</span></div></article><article class="panel full"><h3>Recommended Response</h3><div id="response-list"></div></article></div></section>
-      <section id="detections" class="view"><article class="panel full"><h3>Detection Engineering</h3><p>Rules mapped to MITRE ATT&CK.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Rule</th><th>Severity</th><th>Tactic</th><th>Technique</th></tr></thead><tbody id="detections-body"></tbody></table></div></article></section>
-      <section id="content" class="view"><div class="cards"><article class="panel"><h3>Dashboards</h3><div id="dashboards-list"></div></article><article class="panel"><h3>Parsers</h3><div id="parsers-list"></div></article><article class="panel"><h3>Workflows</h3><div id="workflows-list"></div></article></div></section>
-      <section id="reports" class="view"><article class="panel full"><h3>Security Report Summary</h3><p>Executive-ready posture report.</p><div class="cards" id="reports-list"></div></article></section>
+      <section id="alerts" class="view"><article class="panel full"><h3>Alert Queue</h3><p>Prioritized detections from real rule logic.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Alert / Rule</th><th>Severity</th><th>Confidence</th><th>Tactic</th><th>Technique</th><th>Asset</th><th>Entity</th></tr></thead><tbody id="alerts-body"></tbody></table></div></article></section>
+      <section id="incidents" class="view"><article class="panel full"><h3>Incident Lifecycle</h3><p>Correlated investigations with related alert IDs and timelines.</p><div id="incidents-list"></div></article></section>
+      <section id="anomalies" class="view"><article class="panel full"><h3>Anomaly Review</h3><p>Explainable statistical anomalies with contributing features.</p><div id="anomalies-list"></div></article></section>
+      <section id="analysis" class="view"><div class="stack"><article class="panel full"><h3>Live Analysis</h3><p>Automated triage marker for the highest-confidence alert.</p><div class="analysis-box" id="analysis-box"><strong>Waiting for analysis...</strong><span>Click Run Live Analysis.</span></div></article><article class="panel full"><h3>Recommended Response</h3><div id="response-list"></div></article></div></section>
+      <section id="detections" class="view"><article class="panel full"><h3>Detection Engineering Rules</h3><p>Rules mapped to MITRE ATT&CK.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Rule</th><th>Severity</th><th>Tactic</th><th>Technique</th></tr></thead><tbody id="detections-body"></tbody></table></div></article></section>
+      <section id="content" class="view"><div class="cards"><article class="panel"><h3>Source Distribution</h3><div id="source-distribution"></div></article><article class="panel"><h3>Event Type Distribution</h3><div id="event-type-distribution"></div></article></div></section>
+      <section id="reports" class="view"><article class="panel full"><h3>Security Report Summary</h3><p>Use API outputs to produce incident reports and portfolio screenshots.</p><div class="cards" id="reports-list"><div class="mini"><strong>README</strong><br><span>Architecture, endpoints, limitations, roadmap</span></div><div class="mini"><strong>Tests</strong><br><span>Parser, detection, correlation, anomaly, metrics, API</span></div></div></article></section>
     </main>
   </div>
   <script src="./app.js"></script>
