@@ -1,137 +1,90 @@
-import json
-import os
-import sys
-from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from __future__ import annotations
+import json, os
+from pathlib import Path
+from typing import Any
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from .anomaly import detect_anomalies
+from .correlation import correlate
+from .detection import run_detections
+from .metrics import calculate_metrics
+from .parser import parse_events
+from .rules import RULES
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(CURRENT_DIR)
-sys.path.insert(0, CURRENT_DIR)
+AI_SIEM_HOST=os.getenv('AI_SIEM_HOST','0.0.0.0')
+AI_SIEM_PORT=int(os.getenv('AI_SIEM_PORT','8000'))
+AI_SIEM_ALLOWED_ORIGIN=os.getenv('AI_SIEM_ALLOWED_ORIGIN','http://localhost:5173')
+DATA_FILE=Path(__file__).resolve().parents[1]/'data'/'sample_logs.json'
 
-from engine.parser import normalize_events
-from engine.detections import DETECTIONS, generate_alerts
-from engine.correlation import correlate_incidents, calculate_risk_score
-from engine.triage import select_highest_risk_alert, build_triage
+app=FastAPI(title='AI-SIEM Live SOC Command Center',version='3.0.0')
+app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in AI_SIEM_ALLOWED_ORIGIN.split(',') if x.strip()],allow_credentials=False,allow_methods=['GET','POST'],allow_headers=['content-type','authorization'])
+TRIAGE=[]
 
-HOST = '0.0.0.0'
-PORT = 8000
+def load_events():
+    if DATA_FILE.exists(): return parse_events(json.loads(DATA_FILE.read_text(encoding='utf-8')))
+    return []
+EVENTS=load_events()
+def alerts(): return run_detections(EVENTS)
+def incidents(): return correlate(alerts())
+def anomalies(): return detect_anomalies(EVENTS)
 
+@app.exception_handler(RequestValidationError)
+async def validation_error(request:Request, exc:RequestValidationError): return JSONResponse(status_code=400,content={'detail':'Invalid request format','errors':exc.errors()})
+@app.exception_handler(ValueError)
+async def value_error(request:Request, exc:ValueError): return JSONResponse(status_code=400,content={'detail':str(exc)})
 
-def load_json(path, fallback):
-    try:
-        with open(os.path.join(ROOT, path), 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return fallback
-
-
-def load_logs():
-    return normalize_events(load_json('data/sample_logs.json', []))
-
-
-def build_alerts():
-    return generate_alerts(load_logs())
-
-
-def build_incidents():
-    return correlate_incidents(build_alerts())
-
-
-def integrations():
-    return [
-        {'name': 'Microsoft Defender', 'category': 'Endpoint', 'status': 'Healthy', 'events_per_second': 320},
-        {'name': 'Fortinet Firewall', 'category': 'Firewall', 'status': 'Healthy', 'events_per_second': 540},
-        {'name': 'Azure AD', 'category': 'Identity', 'status': 'Degraded', 'events_per_second': 180},
-        {'name': 'AWS CloudTrail', 'category': 'Cloud', 'status': 'Healthy', 'events_per_second': 210},
-        {'name': 'Syslog Collector', 'category': 'Custom', 'status': 'Healthy', 'events_per_second': 740},
-    ]
-
-
-def workflows():
-    return [
-        {'name': 'Block IP', 'action': 'Firewall containment', 'status': 'Ready'},
-        {'name': 'Isolate Host', 'action': 'Endpoint containment', 'status': 'Ready'},
-        {'name': 'Reset User Password', 'action': 'Identity response', 'status': 'Ready'},
-    ]
-
-
-def metrics():
-    logs = load_logs()
-    alerts = build_alerts()
-    incidents = build_incidents()
-    return {
-        'total_events': len(logs) * 8500 + 700,
-        'critical_alerts': len([a for a in alerts if a['severity'] == 'Critical']),
-        'open_incidents': len(incidents),
-        'risk_score': calculate_risk_score(alerts, incidents),
-        'mean_time_to_respond': '17m',
-    }
-
-
-def triage(payload):
-    alerts = build_alerts()
-    alert_id = payload.get('alert_id') if isinstance(payload, dict) else None
-    selected = None
-    if alert_id:
-        selected = next((alert for alert in alerts if alert.get('id') == alert_id), None)
-    if not selected:
-        selected = select_highest_risk_alert(alerts)
-    return build_triage(selected)
-
-
-class Handler(BaseHTTPRequestHandler):
-    def send_json(self, data, status=200):
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-        self.wfile.write(json.dumps(data, indent=2).encode('utf-8'))
-
-    def do_OPTIONS(self):
-        self.send_json({}, 200)
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-        if path in ['/', '/api']:
-            return self.send_json({
-                'service': 'AI-SIEM API',
-                'status': 'healthy',
-                'time': datetime.now(timezone.utc).isoformat(),
-                'endpoints': ['/api/health', '/api/metrics', '/api/logs', '/api/alerts', '/api/incidents', '/api/detections', '/api/parsers', '/api/dashboards', '/api/workflows', '/api/triage'],
-            })
-        if path == '/api/health': return self.send_json({'status': 'healthy'})
-        if path == '/api/metrics': return self.send_json(metrics())
-        if path == '/api/logs': return self.send_json(load_logs())
-        if path == '/api/alerts': return self.send_json(build_alerts())
-        if path == '/api/incidents': return self.send_json(build_incidents())
-        if path == '/api/detections': return self.send_json([{k: v for k, v in item.items() if k != 'keywords'} for item in DETECTIONS])
-        if path == '/api/parsers': return self.send_json(['linux_auth', 'windows_event', 'firewall_syslog', 'cloudtrail'])
-        if path == '/api/dashboards': return self.send_json(['soc_overview', 'mitre_coverage', 'incident_response'])
-        if path == '/api/workflows': return self.send_json(workflows())
-        if path == '/api/integrations': return self.send_json(integrations())
-        if path == '/api/rules': return self.send_json([{k: v for k, v in item.items() if k != 'keywords'} for item in DETECTIONS])
-        if path == '/api/reports/summary': return self.send_json({'title': 'Weekly SOC Summary', 'critical_findings': 3, 'open_incidents': len(build_incidents()), 'top_tactic': 'Credential Access'})
-        return self.send_json({'error': 'not found', 'path': path}, 404)
-
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        raw = self.rfile.read(length).decode('utf-8') if length else '{}'
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {}
-        if urlparse(self.path).path == '/api/triage':
-            return self.send_json(triage(payload))
-        return self.send_json({'error': 'not found'}, 404)
-
-    def log_message(self, fmt, *args):
-        return
-
-
-if __name__ == '__main__':
-    print('AI-SIEM backend running on http://localhost:8000')
-    print('API index: http://localhost:8000/api')
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+@app.get('/api/health')
+def health(): return {'status':'ok','service':'AI-SIEM','events_loaded':len(EVENTS),'allowed_origin':AI_SIEM_ALLOWED_ORIGIN}
+@app.get('/api/events')
+def get_events(source:str|None=None,event_type:str|None=None,asset:str|None=None,user:str|None=None,src_ip:str|None=None):
+    data=EVENTS
+    if source: data=[e for e in data if e.source==source]
+    if event_type: data=[e for e in data if e.event_type==event_type]
+    if asset: data=[e for e in data if e.asset==asset]
+    if user: data=[e for e in data if e.user==user]
+    if src_ip: data=[e for e in data if e.src_ip==src_ip]
+    return [e.to_dict() for e in data]
+@app.get('/api/alerts')
+def get_alerts(severity:str|None=None,tactic:str|None=None,asset:str|None=None,user:str|None=None,src_ip:str|None=None):
+    data=alerts()
+    if severity: data=[a for a in data if a.severity==severity]
+    if tactic: data=[a for a in data if a.tactic==tactic]
+    if asset: data=[a for a in data if a.asset==asset]
+    if user: data=[a for a in data if a.user==user]
+    if src_ip: data=[a for a in data if a.src_ip==src_ip]
+    return [a.to_dict() for a in data]
+@app.get('/api/incidents')
+def get_incidents(): return [i.to_dict() for i in incidents()]
+@app.get('/api/incidents/{incident_id}')
+def get_incident(incident_id:str):
+    for i in incidents():
+        if i.incident_id==incident_id: return i.to_dict()
+    raise HTTPException(status_code=404,detail='Incident not found')
+@app.get('/api/rules')
+def get_rules(): return RULES
+@app.get('/api/metrics')
+def get_metrics(): return calculate_metrics(EVENTS,alerts(),incidents())
+@app.get('/api/anomalies')
+def get_anomalies(): return [a.to_dict() for a in anomalies()]
+@app.get('/api/triage')
+def triage_history(): return TRIAGE
+@app.post('/api/ingest')
+async def ingest(request:Request):
+    try: payload=await request.json()
+    except Exception as exc: raise HTTPException(status_code=400,detail='Invalid JSON body') from exc
+    if isinstance(payload,dict) and 'events' in payload: items=payload['events']
+    elif isinstance(payload,dict) and 'logs' in payload: items=payload['logs']
+    elif isinstance(payload,list): items=payload
+    elif isinstance(payload,(str,dict)): items=[payload]
+    else: raise ValueError('POST /api/ingest expects one event/log or a list under events/logs')
+    parsed=parse_events(items); EVENTS.extend(parsed); return {'ingested':len(parsed),'total_events':len(EVENTS)}
+@app.post('/api/triage')
+async def triage(request:Request):
+    try: payload=await request.json()
+    except Exception as exc: raise HTTPException(status_code=400,detail='Invalid JSON body') from exc
+    if not isinstance(payload,dict): raise ValueError('triage body must be a JSON object')
+    if not payload.get('incident_id') and not payload.get('alert_id'): raise ValueError('triage requires incident_id or alert_id')
+    if not payload.get('action'): raise ValueError('triage requires action')
+    payload['status']='recorded'; TRIAGE.append(payload); return payload
