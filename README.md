@@ -1,211 +1,93 @@
 # AI-SIEM — Live SOC Command Center
 
-<p align="center">
-  <img src="frontend/assets/logo.svg" alt="AI-SIEM Logo" width="180" />
-</p>
+AI-SIEM is a cybersecurity portfolio project for SOC analyst and junior detection engineering practice. It is not an enterprise SIEM replacement and does not claim production readiness. The project demonstrates a realistic mini-pipeline: log ingestion, parsing, normalized events, rule-based detections, alert correlation, explainable anomaly scoring, calculated metrics, Docker, and unit tests.
 
-<p align="center">
-  <strong>Professional zero-dependency AI-SIEM/SOC platform for security monitoring, detection engineering, incident triage, MITRE ATT&CK mapping, and response workflows.</strong>
-</p>
+## What it does
 
----
+- Parses mixed Linux auth, Windows/PowerShell, firewall, WAF/web, and normalized JSON events.
+- Normalizes events into a consistent schema.
+- Runs detections using field matching, contains, regex, thresholds, time windows, and group-by fields.
+- Maps detections to MITRE ATT&CK tactic and technique.
+- Correlates alerts into incidents using real relationships: same asset, user, source IP, tactic, and time proximity.
+- Calculates metrics from current in-memory events instead of hardcoded formulas.
+- Generates explainable statistical anomalies.
+- Exposes FastAPI endpoints and a Vite frontend.
 
-## Overview
+## Event schema
 
-**AI-SIEM** is a full-stack cybersecurity engineering project that simulates a real Security Operations Center platform. It provides a live SOC dashboard, backend API, detection engine, parser layer, incident correlation, triage logic, MITRE ATT&CK mapping, and response workflows.
+`id`, `timestamp`, `source`, `event_type`, `asset`, `user`, `src_ip`, `dst_ip`, `process_name`, `command_line`, `status`, `message`, `raw_log`.
 
-The project is intentionally simple to run and professional to present. It uses **only Python standard library + HTML/CSS/JavaScript**.
+## API endpoints
 
-No npm. No pip. No venv. No React. No external services.
+- `GET /api/health`
+- `GET /api/events`
+- `GET /api/alerts`
+- `GET /api/incidents`
+- `GET /api/incidents/{incident_id}`
+- `GET /api/rules`
+- `GET /api/metrics`
+- `GET /api/anomalies`
+- `GET /api/triage`
+- `POST /api/ingest`
+- `POST /api/triage`
 
----
+## Detection examples
 
-## Features
+| Rule | Logic | MITRE |
+|---|---|---|
+| SSH brute force | 5 failed SSH logins from same `src_ip` in 5 minutes | T1110 |
+| Success after failures | successful SSH login after multiple failures | T1078 |
+| Encoded PowerShell | command line contains encoded/bypass indicators | T1059.001 |
+| Internal port scan | same source reaches many destinations quickly | T1046 |
+| Admin account creation | Windows account/admin group change | T1136 |
+| SQL injection | WAF/web request matches SQLi regex | T1190 |
+| Rare source IP | user logs in from a new source | T1078 |
+| Off-hours privileged access | root/admin success outside business hours | T1078 |
 
-- Live SOC dashboard as the first screen
-- Backend API using Python standard library only
-- Pure HTML/CSS/JavaScript frontend
-- Alert queue with severity, confidence, asset, source, and MITRE tactic
-- Live Analysis button for analyst-style triage
-- Incident lifecycle view
-- MITRE ATT&CK coverage panel
-- Detection rules inventory
-- Parser catalog
-- Dashboards catalog
-- Response workflows
-- Professional dark enterprise design
-- One-command startup script
-
----
-
-## Project Structure
-
-```text
-ai-siem/
-├── README.md
-├── start.sh
-├── start.bat
-├── backend/
-│   ├── main.py
-│   └── engine/
-│       ├── __init__.py
-│       ├── parser.py
-│       ├── detections.py
-│       ├── correlation.py
-│       └── triage.py
-├── frontend/
-│   ├── index.html
-│   ├── styles.css
-│   ├── app.js
-│   └── assets/
-│       └── logo.svg
-├── data/
-│   └── sample_logs.json
-├── dashboards/
-│   ├── soc_overview.json
-│   ├── mitre_coverage.json
-│   └── incident_response.json
-├── detections/
-│   ├── ssh_bruteforce.yml
-│   ├── suspicious_powershell.yml
-│   ├── port_scan.yml
-│   ├── admin_account_created.yml
-│   └── sql_injection.yml
-├── parsers/
-│   ├── linux_auth.conf
-│   ├── windows_event.conf
-│   ├── firewall_syslog.conf
-│   └── cloudtrail.conf
-├── workflows/
-│   ├── block_ip.yml
-│   ├── isolate_host.yml
-│   └── reset_user_password.yml
-└── docs/
-    ├── architecture.md
-    ├── detection-engine.md
-    └── runbook.md
-```
-
----
-
-## Run the Project
-
-### Linux / Kali / Git Bash
+## Run locally
 
 ```bash
-bash start.sh
+pip install -r requirements.txt
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Windows CMD
-
-```bat
-start.bat
-```
-
-Then open:
-
-```text
-http://localhost:5173
-```
-
-Backend API:
-
-```text
-http://localhost:8000/api
-```
-
----
-
-## Manual Run
-
-Terminal 1:
+## Run tests
 
 ```bash
-cd backend
-python main.py
+python -m unittest discover tests
 ```
 
-Terminal 2:
+## Run with Docker
 
 ```bash
-cd frontend
-python -m http.server 5173
+docker compose up --build
 ```
 
-Open:
+Backend: `http://localhost:8000`
+Frontend: `http://localhost:5173`
 
-```text
-http://localhost:5173
-```
+## Configuration
 
----
+- `AI_SIEM_HOST` default: `0.0.0.0`
+- `AI_SIEM_PORT` default: `8000`
+- `AI_SIEM_ALLOWED_ORIGIN` default: `http://localhost:5173`
 
-## API Endpoints
+CORS is environment-configured and is not wildcard by default.
 
-```text
-GET  /api/health
-GET  /api/metrics
-GET  /api/logs
-GET  /api/alerts
-GET  /api/incidents
-GET  /api/detections
-GET  /api/parsers
-GET  /api/dashboards
-GET  /api/workflows
-GET  /api/reports/summary
-POST /api/triage
-```
+## Limitations
 
----
+- In-memory storage only.
+- Parsers are practical examples, not full ECS/OCSF coverage.
+- No authentication or API keys yet.
+- No database persistence yet.
+- No Sigma rule import/export yet.
+- Anomaly detection is explainable/statistical, not enterprise ML.
 
-## SOC Workflow
+## Roadmap
 
-```text
-Raw Logs
-   ↓
-Parser Layer
-   ↓
-Detection Engine
-   ↓
-Alert Generation
-   ↓
-Correlation Engine
-   ↓
-Incident Creation
-   ↓
-Live Analysis + Response Workflow
-```
-
----
-
-## Detection Coverage
-
-Current detections include:
-
-- SSH brute force
-- Suspicious PowerShell execution
-- Internal port scan
-- Admin account creation
-- SQL injection attempt
-
----
-
-## Portfolio Positioning
-
-This project demonstrates:
-
-- SOC analyst workflow understanding
-- SIEM architecture fundamentals
-- Detection engineering concepts
-- API design
-- Frontend dashboard design
-- MITRE ATT&CK mapping
-- Incident response runbooks
-- Clean repository organization
-
----
-
-## Author
-
-**Adam Ghanem**  
-Cybersecurity & Networks Student
+- Add SQLite/PostgreSQL persistence.
+- Add authentication and API keys.
+- Add ECS/OCSF mapping.
+- Add Sigma import/export.
+- Add analyst notes and audit trail.
+- Add rule suppression/tuning workflow.
