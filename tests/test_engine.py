@@ -1,11 +1,20 @@
+import os
 import unittest
 from fastapi.testclient import TestClient
+
+os.environ.setdefault('AI_SIEM_API_KEY','test-token')
+os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE','1000')
+os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE','1000')
+
 from backend.main import app, EVENTS
 from backend.parser import parse_event, parse_events
 from backend.detection import run_detections
 from backend.correlation import correlate
 from backend.anomaly import detect_anomalies
 from backend.metrics import calculate_metrics
+from backend.security import reset_rate_limit_state
+
+AUTH={'Authorization':'Bearer test-token'}
 
 class ParserTests(unittest.TestCase):
     def test_linux_auth_normalization(self):
@@ -37,10 +46,12 @@ class SocLogicTests(unittest.TestCase):
         self.assertEqual(m['total_events'],6); self.assertGreaterEqual(len(inc),1); self.assertGreaterEqual(len(an),1)
 
 class ApiTests(unittest.TestCase):
+    def setUp(self):
+        reset_rate_limit_state()
     def test_ingest_and_triage(self):
         c=TestClient(app); before=len(EVENTS)
-        r=c.post('/api/ingest',json={'logs':['Jun 11 12:00:00 host1 sshd[1]: Accepted password for adam from 10.0.0.9 port 22 ssh2']})
+        r=c.post('/api/ingest',headers=AUTH,json={'logs':['Jun 11 12:00:00 host1 sshd[1]: Accepted password for adam from 10.0.0.9 port 22 ssh2']})
         self.assertEqual(r.status_code,200); self.assertEqual(r.json()['ingested'],1); self.assertEqual(len(EVENTS),before+1)
-        t=c.post('/api/triage',json={'alert_id':'AL-test','action':'false_positive','analyst':'adam'}); self.assertEqual(t.status_code,200); self.assertEqual(t.json()['status'],'recorded')
+        t=c.post('/api/triage',headers=AUTH,json={'alert_id':'AL-test','action':'false_positive','analyst':'adam'}); self.assertEqual(t.status_code,200); self.assertEqual(t.json()['status'],'recorded')
 
 if __name__=='__main__': unittest.main()
