@@ -1,5 +1,5 @@
 from __future__ import annotations
-from hashlib import sha1
+from hashlib import sha256
 from .models import Alert, Incident
 W={'critical':4,'high':3,'medium':2,'low':1}
 def _rel(a,b):
@@ -12,7 +12,7 @@ def _stable_incident_id(group:list[Alert])->str:
     parts=[]
     for a in sorted(group, key=lambda x: x.alert_id):
         parts.extend([a.alert_id, a.rule_id, ','.join(sorted(a.event_ids)), a.asset or '', a.user or '', a.src_ip or ''])
-    return 'INC-' + sha1('|'.join(parts).encode('utf-8')).hexdigest()[:10].upper()
+    return 'INC-' + sha256('|'.join(parts).encode('utf-8')).hexdigest()[:10].upper()
 def correlate(alerts:list[Alert])->list[Incident]:
     used=set(); inc=[]; alerts=sorted(alerts,key=lambda a:a.timestamp)
     for a in alerts:
