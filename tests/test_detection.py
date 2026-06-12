@@ -14,6 +14,14 @@ class DetectionTests(unittest.TestCase):
         alerts = run_detections(events)
         self.assertTrue(any(a.rule_id == 'DET-SSH-002' for a in alerts))
 
+    def test_password_spraying_across_users(self):
+        events = [
+            event(i, status='failure', src_ip='203.0.113.20', user=f'user{i}')
+            for i in range(5)
+        ]
+        alerts = run_detections(events)
+        self.assertTrue(any(a.rule_id == 'DET-SSH-003' and a.severity == 'high' for a in alerts))
+
     def test_encoded_powershell_critical(self):
         alerts = run_detections([event(1, source='windows', event_type='powershell_execution', process_name='powershell.exe', command_line='powershell -NoP -enc SQBFAFgA')])
         self.assertTrue(any(a.rule_id == 'DET-PS-001' and a.severity == 'critical' for a in alerts))
