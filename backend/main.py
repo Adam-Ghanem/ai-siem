@@ -85,7 +85,7 @@ def get_incident(incident_id:str):
 @app.get('/api/anomalies')
 def get_anomalies(): return [a.to_dict() for a in anomalies()]
 @app.get('/api/rules')
-def get_rules(): return [r.__dict__ for r in RULES]
+def get_rules(): return [r if isinstance(r,dict) else r.__dict__ for r in RULES]
 @app.get('/api/metrics')
 def get_metrics():
     m=calculate_metrics(EVENTS,alerts(),incidents())
