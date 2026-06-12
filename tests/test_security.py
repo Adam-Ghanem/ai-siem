@@ -15,11 +15,13 @@ from backend.security import reset_rate_limit_state
 import backend.security as security
 
 AUTH={'Authorization':'Bearer test-token'}
+AUDIT_PATH=Path('logs/test-audit.log')
 
 class SecurityTests(unittest.TestCase):
     def setUp(self):
         reset_rate_limit_state()
-        Path('logs/test-audit.log').unlink(missing_ok=True)
+        security.AUDIT_LOG_PATH=AUDIT_PATH
+        AUDIT_PATH.unlink(missing_ok=True)
         self.client=TestClient(main_module.app)
 
     def test_health_public_but_events_require_auth(self):
@@ -46,7 +48,7 @@ class SecurityTests(unittest.TestCase):
     def test_audit_logging(self):
         r=self.client.post('/api/triage',headers=AUTH,json={'alert_id':'AL-1','action':'reviewed'})
         self.assertEqual(r.status_code,200)
-        text=Path('logs/test-audit.log').read_text(encoding='utf-8')
+        text=AUDIT_PATH.read_text(encoding='utf-8')
         self.assertIn('action=triage',text)
         self.assertNotIn('Bearer',text)
 
