@@ -20,7 +20,7 @@ AI_SIEM_ALLOWED_ORIGIN=os.getenv('AI_SIEM_ALLOWED_ORIGIN','http://localhost:5173
 DATA_FILE=Path(__file__).resolve().parents[1]/'data'/'sample_logs.json'
 
 app=FastAPI(title='AI-SIEM Live SOC Command Center',version='3.2.0')
-app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in AI_SIEM_ALLOWED_ORIGIN.split(',') if x.strip()],allow_credentials=False,allow_methods=['GET','POST'],allow_headers=['content-type','authorization'])
+app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in AI_SIEM_ALLOWED_ORIGIN.split(',') if x.strip()],allow_credentials=False,allow_methods=['GET','POST','OPTIONS'],allow_headers=['content-type','authorization'])
 TRIAGE=[]
 
 def load_events():
@@ -33,6 +33,8 @@ def anomalies(): return detect_anomalies(EVENTS)
 
 @app.middleware('http')
 async def security_middleware(request:Request, call_next):
+    if request.method == 'OPTIONS':
+        return await call_next(request)
     try:
         enforce_rate_limit(request)
         enforce_auth(request)
@@ -70,53 +72,58 @@ def get_alerts(severity:str|None=None,tactic:str|None=None,asset:str|None=None,u
     if src_ip: data=[a for a in data if a.src_ip==src_ip]
     return [a.to_dict() for a in data]
 @app.get('/api/incidents')
-def get_incidents(): return [i.to_dict() for i in incidents()]
+def get_incidents(status:str|None=None,priority:str|None=None):
+    data=incidents()
+    if status: data=[i for i in data if i.status==status]
+    if priority: data=[i for i in data if i.priority==priority]
+    return [i.to_dict() for i in data]
 @app.get('/api/incidents/{incident_id}')
 def get_incident(incident_id:str):
     for i in incidents():
         if i.incident_id==incident_id: return i.to_dict()
     raise HTTPException(status_code=404,detail='Incident not found')
-@app.get('/api/rules')
-def get_rules(): return RULES
-@app.get('/api/metrics')
-def get_metrics():
-    m=calculate_metrics(EVENTS,alerts(),incidents()); m['parsing_failed_events']=parser_stats()['parsing_failed_events']; return m
 @app.get('/api/anomalies')
 def get_anomalies(): return [a.to_dict() for a in anomalies()]
+@app.get('/api/rules')
+def get_rules(): return [r.__dict__ for r in RULES]
+@app.get('/api/metrics')
+def get_metrics():
+    m=calculate_metrics(EVENTS,alerts(),incidents())
+    m['parsing_failed_events']=parser_stats()['unknown_events']
+    return m
 @app.get('/api/parser/stats')
 def get_parser_stats(): return parser_stats()
-@app.get('/api/triage')
-def triage_history(): return TRIAGE
 
-def _extract_ingest_items(payload:Any):
-    if isinstance(payload,dict) and 'events' in payload: return payload['events']
-    if isinstance(payload,dict) and 'logs' in payload: return payload['logs']
-    if isinstance(payload,list): return payload
-    if isinstance(payload,(str,dict)): return [payload]
-    raise ValueError('POST /api/ingest expects one event/log or a list under events/logs')
-
-def _validate_ingest_items(items):
-    if len(items)>MAX_EVENTS_PER_INGEST: raise HTTPException(status_code=413,detail=f'max events per ingest exceeded: {MAX_EVENTS_PER_INGEST}')
-    if len(EVENTS)+len(items)>MAX_IN_MEMORY_EVENTS: raise HTTPException(status_code=413,detail=f'in-memory event limit exceeded: {MAX_IN_MEMORY_EVENTS}')
+def _extract_items(payload:Any):
+    if isinstance(payload,dict):
+        if 'logs' in payload: items=payload['logs']
+        elif 'events' in payload: items=payload['events']
+        else: items=[payload]
+    elif isinstance(payload,list): items=payload
+    else: raise ValueError('Request body must be JSON object or list')
+    if len(items)>MAX_EVENTS_PER_INGEST: raise HTTPException(status_code=413,detail=f'Maximum {MAX_EVENTS_PER_INGEST} events per ingest request')
+    if len(EVENTS)+len(items)>MAX_IN_MEMORY_EVENTS: raise HTTPException(status_code=413,detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached')
     for item in items:
-        size=len(json.dumps(item).encode('utf-8')) if isinstance(item,dict) else len(str(item).encode('utf-8'))
-        if size>MAX_RAW_LOG_BYTES: raise HTTPException(status_code=413,detail=f'raw log item exceeds {MAX_RAW_LOG_BYTES} bytes')
-
+        raw=item if isinstance(item,str) else json.dumps(item,separators=(',',':'))
+        if len(raw.encode('utf-8'))>MAX_RAW_LOG_BYTES: raise HTTPException(status_code=413,detail=f'Maximum raw event size is {MAX_RAW_LOG_BYTES} bytes')
+    return items
 @app.post('/api/ingest')
 async def ingest(request:Request):
     try: payload=await request.json()
-    except Exception as exc:
+    except Exception:
         audit_log(request,'ingest','invalid_json')
-        raise HTTPException(status_code=400,detail='Invalid JSON body') from exc
-    items=_extract_ingest_items(payload); _validate_ingest_items(items)
-    parsed=parse_events(items); EVENTS.extend(parsed); audit_log(request,'ingest',f'success count={len(parsed)}'); return {'ingested':len(parsed),'total_events':len(EVENTS)}
+        raise HTTPException(status_code=400,detail='Invalid JSON body')
+    items=_extract_items(payload)
+    parsed=parse_events(items); EVENTS.extend(parsed)
+    audit_log(request,'ingest','success',f'count={len(parsed)}')
+    return {'ingested':len(parsed),'total_events':len(EVENTS)}
 @app.post('/api/triage')
 async def triage(request:Request):
     try: payload=await request.json()
-    except Exception as exc:
+    except Exception:
         audit_log(request,'triage','invalid_json')
-        raise HTTPException(status_code=400,detail='Invalid JSON body') from exc
-    if not isinstance(payload,dict): raise ValueError('triage body must be a JSON object')
-    if not payload.get('incident_id') and not payload.get('alert_id'): raise ValueError('triage requires incident_id or alert_id')
-    if not payload.get('action'): raise ValueError('triage requires action')
-    payload['status']='recorded'; TRIAGE.append(payload); audit_log(request,'triage','success'); return payload
+        raise HTTPException(status_code=400,detail='Invalid JSON body')
+    if not isinstance(payload,dict) or not payload.get('alert_id') or not payload.get('action'): raise HTTPException(status_code=400,detail='alert_id and action are required')
+    record={'alert_id':payload['alert_id'],'action':payload['action'],'analyst':payload.get('analyst','frontend'),'status':'recorded'}; TRIAGE.append(record)
+    audit_log(request,'triage','success',f"alert_id={payload['alert_id']}")
+    return record
