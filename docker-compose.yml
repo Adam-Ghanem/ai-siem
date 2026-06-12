@@ -8,8 +8,13 @@ services:
       AI_SIEM_PORT: 8000
       AI_SIEM_ALLOWED_ORIGIN: http://localhost:5173
       AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:-dev-token}
+      AI_SIEM_STORAGE: sqlite
+      AI_SIEM_DB_PATH: /app/data/ai_siem.db
       AI_SIEM_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_RATE_LIMIT_PER_MINUTE:-60}
       AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE:-10}
+    volumes:
+      - ai_siem_data:/app/data
+      - ai_siem_logs:/app/logs
   frontend:
     image: node:22-alpine
     working_dir: /ui
@@ -20,3 +25,7 @@ services:
       - "5173:5173"
     environment:
       VITE_API_URL: http://localhost:8000
+
+volumes:
+  ai_siem_data:
+  ai_siem_logs:
