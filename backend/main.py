@@ -131,10 +131,12 @@ async def ingest(request:Request):
         audit_log(request,'ingest','invalid_json')
         raise HTTPException(status_code=400,detail='Invalid JSON body')
     items=_extract_items(payload)
+    before_stats = parser_stats()
     parsed=parse_events(items); EVENTS.extend(parsed)
     if AI_SIEM_STORAGE=='sqlite': save_events(parsed)
+    after_stats = parser_stats()
     audit_log(request,'ingest','success',f'count={len(parsed)}')
-    return {'ingested':len(parsed),'total_events':len(EVENTS),'storage':AI_SIEM_STORAGE}
+    return {'ingested':len(parsed),'total_events':len(EVENTS),'storage':AI_SIEM_STORAGE,'unknown_events_detected':after_stats['unknown_events']-before_stats['unknown_events']}
 @app.post('/api/triage')
 async def triage(request:Request):
     try: payload=await request.json()
