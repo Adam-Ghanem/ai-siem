@@ -34,6 +34,15 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(metrics_response.status_code, 200)
         self.assertEqual(metrics_response.json()['total_events'], len(events))
 
+    def test_attack_coverage_reports_rule_metadata(self):
+        response = self.client.get('/api/coverage/attack', headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['total_rules'], len(main.RULES))
+        self.assertTrue(any(t['tactic'] == 'Credential Access' for t in body['tactics']))
+        self.assertTrue(any(t['technique'] == 'T1110' for t in body['techniques']))
+        self.assertEqual(body['unmapped_rules'], [])
+
     def test_alerts_use_real_detection_logic(self):
         alerts = self.client.get('/api/alerts', headers=AUTH).json()
         self.assertTrue(any(a.get('rule_id') == 'DET-SSH-001' for a in alerts))
