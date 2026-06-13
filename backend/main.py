@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .anomaly import detect_anomalies
 from .correlation import correlate
+from .coverage import generate_attack_coverage
 from .detection import run_detections
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
@@ -98,6 +99,8 @@ def get_incident(incident_id:str):
 def get_anomalies(): return [a.to_dict() for a in anomalies()]
 @app.get('/api/rules')
 def get_rules(): return [r if isinstance(r,dict) else r.__dict__ for r in RULES]
+@app.get('/api/coverage/attack')
+def get_attack_coverage(): return generate_attack_coverage(get_rules())
 @app.get('/api/metrics')
 def get_metrics():
     m=calculate_metrics(EVENTS,alerts(),incidents())
