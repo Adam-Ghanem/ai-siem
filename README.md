@@ -37,6 +37,7 @@ flowchart LR
 - Audit logging to `logs/audit.log` without logging secrets.
 - Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
+- MITRE ATT&CK coverage summary for implemented rule metadata.
 - Alert suppression and AI-noise reduction for internal rare-source-IP events.
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
@@ -109,6 +110,12 @@ Storage stats:
 
 ```bash
 curl -H "Authorization: Bearer dev-token" http://localhost:8000/api/storage/stats
+```
+
+ATT&CK coverage summary:
+
+```bash
+curl -H "Authorization: Bearer dev-token" http://localhost:8000/api/coverage/attack
 ```
 
 ## Run frontend
@@ -199,6 +206,7 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/incidents` | required | Correlated incidents |
 | `GET` | `/api/incidents/{incident_id}` | required | One incident by ID |
 | `GET` | `/api/rules` | required | Rule definitions |
+| `GET` | `/api/coverage/attack` | required | MITRE ATT&CK coverage by rule metadata |
 | `GET` | `/api/metrics` | required | SOC metrics and parser failure count |
 | `GET` | `/api/anomalies` | required | Explainable anomalies |
 | `GET` | `/api/parser/stats` | required | Parser visibility stats |
@@ -219,6 +227,23 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `DET-WAF-001` | SQL injection indicators in WAF/web requests | High | Initial Access | `T1190` |
 | `DET-AI-001` | Rare external source IP for user | Medium | Initial Access | `T1078` |
 | `DET-AI-002` | Off-hours privileged access | Medium | Privilege Escalation | `T1078` |
+
+## MITRE ATT&CK coverage report
+
+`GET /api/coverage/attack` summarizes implemented detection-rule metadata by ATT&CK tactic and technique. It is useful for SOC roadmap work because it shows where the current rule set is concentrated and where coverage is still thin.
+
+The report is intentionally honest: it reflects implemented rule metadata only. It does not prove that every required telemetry source is connected, that every ATT&CK procedure is detected, or that rules are tuned for a production environment.
+
+Example fields:
+
+```json
+{
+  "total_rules": 7,
+  "tactics": [{"tactic": "Initial Access", "rule_count": 2}],
+  "techniques": [{"technique": "T1078", "tactic": "Initial Access", "rule_count": 1, "rules": ["DET-SSH-002"]}],
+  "unmapped_rules": []
+}
+```
 
 ## Run tests and security checks
 
