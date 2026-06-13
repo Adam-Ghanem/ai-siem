@@ -15,6 +15,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(e.event_type, 'ssh_login')
         self.assertEqual(e.status, 'success')
 
+    def test_linux_auth_accepted_publickey_line(self):
+        e = parse_event('Jun 11 10:02:00 linux-app01 sshd[3020]: Accepted publickey for adam from 203.0.113.44 port 55200 ssh2: RSA SHA256:demo')
+        self.assertEqual(e.event_type, 'ssh_login')
+        self.assertEqual(e.status, 'success')
+        self.assertEqual(e.user, 'adam')
+        self.assertEqual(e.src_ip, '203.0.113.44')
+
     def test_windows_powershell_4104(self):
         e = parse_event('WinEvent Time=2026-06-11T12:06:00Z Host=win10-fin01 EventID=4104 User=adam Process=powershell.exe CommandLine="powershell.exe -NoP -enc SQBFAFgA" Message="PowerShell ScriptBlock"')
         self.assertEqual(e.source, 'windows')
