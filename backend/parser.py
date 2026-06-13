@@ -26,12 +26,18 @@ def _linux_time(mon, day, clock):
     return datetime.strptime(f'{year} {mon} {int(day)} {clock}', '%Y %b %d %H:%M:%S').replace(tzinfo=timezone.utc)
 
 def _linux_user(msg):
-    m = re.search(r'invalid user (\S+)', msg) or re.search(r'for (\S+) from', msg)
+    m = re.search(r'invalid user (\S+)', msg) or re.search(r'for (?:invalid user )?(\S+) from', msg)
     return m.group(1) if m else None
 
 def _linux_ip(msg):
     m = re.search(r'from (\d+\.\d+\.\d+\.\d+)', msg)
     return m.group(1) if m else None
+
+def _ssh_status(msg):
+    lowered = msg.lower()
+    if lowered.startswith('accepted '): return 'success'
+    if lowered.startswith('failed '): return 'failure'
+    return 'unknown'
 
 def parse_event(item: str | dict[str, Any]) -> Event:
     try:
@@ -42,7 +48,7 @@ def parse_event(item: str | dict[str, Any]) -> Event:
         if raw.startswith('{'):
             ev=Event.from_dict(json.loads(raw)); PARSER_STATS['parsed_events']+=1; return ev
         if m := LINUX.match(raw):
-            msg = m.group('msg'); status = 'success' if 'Accepted password' in msg else 'failure' if 'Failed password' in msg else 'unknown'
+            msg = m.group('msg'); status = _ssh_status(msg)
             PARSER_STATS['parsed_events']+=1
             return Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw)
         if m := WIN.match(raw):
