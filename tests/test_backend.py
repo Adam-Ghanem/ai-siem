@@ -71,6 +71,7 @@ class BackendApiTests(unittest.TestCase):
         response = self.client.post('/api/ingest', headers=AUTH, json=payload)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['ingested'], 1)
+        self.assertIn('unknown_events_detected', response.json())
         after = self.client.get('/api/metrics', headers=AUTH).json()['total_events']
         self.assertEqual(after, before + 1)
 
