@@ -27,12 +27,13 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else 'unknown'
 
 
-def audit_log(request: Request, action: str, result: str) -> None:
+def audit_log(request: Request, action: str, result: str, detail: str = '') -> None:
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    detail_text = f' detail={detail}' if detail else ''
     line = (
         f"timestamp={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
         f"client_ip={client_ip(request)} endpoint={request.url.path} "
-        f"action={action} result={result}\n"
+        f"action={action} result={result}{detail_text}\n"
     )
     with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
         handle.write(line)
