@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from tests.helpers import event
 from backend.detection import run_detections
 
@@ -39,6 +40,27 @@ class DetectionTests(unittest.TestCase):
         events = [event(i, status='success', src_ip=f'10.0.0.{i}', user=f'user{i}') for i in range(1, 4)]
         alerts = run_detections(events)
         self.assertFalse(any(a.severity in {'high', 'critical'} for a in alerts))
+
+    def test_rare_source_uses_behavior_rule_id(self):
+        events = [
+            event(1, status='success', user='adam', src_ip='10.0.0.1'),
+            event(2, status='success', user='adam', src_ip='10.0.0.2'),
+            event(3, status='success', user='adam', src_ip='10.0.0.3'),
+            event(4, status='success', user='adam', src_ip='8.8.8.8'),
+        ]
+        alerts = run_detections(events)
+        self.assertTrue(any(alert.rule_id == 'DET-BEH-001' for alert in alerts))
+
+    def test_off_hours_privileged_login_uses_behavior_rule_id(self):
+        alerts = run_detections([
+            event(
+                1,
+                status='success',
+                user='root',
+                timestamp=datetime(2026, 6, 11, 23, 0, tzinfo=timezone.utc),
+            )
+        ])
+        self.assertTrue(any(alert.rule_id == 'DET-BEH-002' for alert in alerts))
 
 if __name__ == '__main__':
     unittest.main()

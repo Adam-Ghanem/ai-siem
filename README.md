@@ -1,4 +1,4 @@
-# AI-SIEM — Real SOC / AI-SIEM Portfolio Lab
+# AI-SIEM — SOC Engineering Portfolio Lab
 
 AI-SIEM is a defensive cybersecurity engineering project that ingests logs, normalizes events, runs detection logic, correlates alerts into incidents, calculates metrics, and exposes the result through a FastAPI API and lightweight SOC dashboard.
 
@@ -38,7 +38,7 @@ flowchart LR
 - Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
 - MITRE ATT&CK coverage summary for implemented rule metadata.
-- Alert suppression and AI-noise reduction for internal rare-source-IP events.
+- Alert suppression and duplicate-noise reduction for rare-source-IP events.
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
 - Docker Compose support and security CI.
@@ -225,8 +225,8 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `DET-NET-001` | Internal port scan across multiple destinations | Medium | Discovery | `T1046` |
 | `DET-WIN-001` | Admin account creation or group change | Critical | Persistence | `T1136` |
 | `DET-WAF-001` | SQL injection indicators in WAF/web requests | High | Initial Access | `T1190` |
-| `DET-AI-001` | Rare external source IP for user | Medium | Initial Access | `T1078` |
-| `DET-AI-002` | Off-hours privileged access | Medium | Privilege Escalation | `T1078` |
+| `DET-BEH-001` | Rare external source IP for user | Medium | Initial Access | `T1078` |
+| `DET-BEH-002` | Off-hours privileged access | Medium | Privilege Escalation | `T1078` |
 
 ## MITRE ATT&CK coverage report
 
