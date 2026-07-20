@@ -14,6 +14,9 @@ class FrontendSecurityTests(unittest.TestCase):
         self.assertIn("api('/api/session')", source)
         self.assertIn("method: 'PATCH'", source)
         self.assertIn('canOperate()', source)
+        self.assertIn("api('/api/notifications/status')", source)
+        self.assertIn("requestJson('/api/notifications/test'", source)
+        self.assertIn('canAdminister()', source)
 
     def test_every_static_id_selector_exists_in_the_dashboard(self):
         source = Path('frontend/app.js').read_text(encoding='utf-8')

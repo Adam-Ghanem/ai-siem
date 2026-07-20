@@ -48,6 +48,7 @@ flowchart LR
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
 - Role-aware, tab-scoped dashboard authentication with output escaping, alert/case filters, ownership controls, SLA visibility, and real activity charts.
+- Optional generic webhook and Slack alert notifications with de-identification, debounce, retries, and circuit breaking.
 - Hardened Docker Compose deployment and security CI.
 
 ## Security model
@@ -118,6 +119,39 @@ reverse proxy.
 | `AI_SIEM_MAX_RAW_LOG_BYTES` | `10240` | Maximum individual raw event |
 | `AI_SIEM_MAX_IN_MEMORY_EVENTS` | `10000` | Analysis working-set limit |
 | `AI_SIEM_TRUST_PROXY_HEADERS` | `false` | Trust validated proxy client IPs |
+| `AI_SIEM_WEBHOOK_URL` | empty | Optional generic HTTPS alert webhook |
+| `AI_SIEM_SLACK_WEBHOOK_URL` | empty | Optional Slack incoming webhook |
+| `AI_SIEM_NOTIFY_INCLUDE_RAW_TARGETS` | `false` | Include raw targets in notifications; explicit privacy opt-in |
+| `AI_SIEM_NOTIFY_DEBOUNCE_SECONDS` | `900` | Duplicate-alert notification window |
+| `AI_SIEM_NOTIFY_MIN_SEVERITY` | `High` | Minimum severity sent outbound |
+| `AI_SIEM_NOTIFY_CIRCUIT_FAILURES` | `5` | Consecutive failures before opening a circuit |
+| `AI_SIEM_NOTIFY_CIRCUIT_RESET_SECONDS` | `300` | Circuit recovery delay |
+| `AI_SIEM_NOTIFY_QUEUE_SIZE` | `500` | Bounded non-blocking delivery queue |
+
+## Outbound notifications
+
+Notifications are disabled unless at least one destination is configured:
+
+```bash
+export AI_SIEM_WEBHOOK_URL='https://alerts.example.com/ai-siem'
+# or
+export AI_SIEM_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/replace/me'
+```
+
+New alerts at or above the configured minimum severity and first-time alert SLA
+breaches are queued for delivery. Target IPs, hostnames, users, and evidence are
+removed by default. URLs must use HTTPS, redirects are refused, responses are
+capped, and a failed destination cannot fail alert creation.
+
+An Admin can inspect safe channel state and send a synthetic test without the
+API ever returning the configured URL:
+
+```bash
+curl -H "Authorization: Bearer admin-token" \
+  http://localhost:8000/api/notifications/status
+curl -X POST -H "Authorization: Bearer admin-token" \
+  http://localhost:8000/api/notifications/test
+```
 
 ## Run backend locally
 
@@ -264,6 +298,8 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/anomalies` | Viewer+ | Explainable anomalies |
 | `GET` | `/api/parser/stats` | Admin | Parser visibility stats |
 | `GET` | `/api/storage/stats` | Admin | SQLite storage statistics |
+| `GET` | `/api/notifications/status` | Admin | Channel kind and enabled state, never URLs |
+| `POST` | `/api/notifications/test` | Admin | Send a synthetic channel test |
 | `GET` | `/api/triage` | Viewer+ | Recent persisted triage records |
 | `POST` | `/api/ingest` | Operator+ | Ingest events/logs |
 | `POST` | `/api/triage` | Operator+ | Record validated analyst triage |
@@ -308,7 +344,7 @@ python -m compileall backend tests agents
 AI_SIEM_API_KEY=test-token AI_SIEM_RATE_LIMIT_PER_MINUTE=1000 AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE=1000 python -m unittest discover tests -v
 python -m pip install -r requirements-dev.txt
 flake8 --select=F backend agents tests healthcheck.py
-mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
+mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/notifications.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
 node --check frontend/app.js
 bash -n start.sh
 bandit -q -r backend agents healthcheck.py -lll
@@ -351,6 +387,6 @@ Docker hardening notes:
 - Add Sysmon parser and Windows Event IDs 4624/4625/4688/4104/4720/4732.
 - Add Sigma rule import/export.
 - Add OIDC/SSO-backed individual analyst identities.
-- Add outbound alert notifications and escalation routing.
+- Add scheduled escalation policies and on-call rotations.
 - Add evidence export and scheduled SOC reports.
 - Add PostgreSQL or OpenSearch backend option.

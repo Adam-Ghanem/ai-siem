@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 from uuid import uuid4
 
 from .models import Alert, Incident
+from .notifications import dispatch_alert_notification, severity_is_enabled
 from .storage import connect, init_db
 
 ALERT_STATUSES = {
@@ -90,16 +91,34 @@ class OperationsStore:
         persistent: bool,
         path: str | Path | None = None,
         clock: Callable[[], datetime] = _utc_now,
+        notifier: Callable[[dict[str, Any], str], bool] = dispatch_alert_notification,
     ) -> None:
         self.persistent = persistent
         self.path = path
         self.clock = clock
+        self.notifier = notifier
         self._lock = threading.RLock()
         self._alerts: dict[str, dict[str, Any]] = {}
         self._incidents: dict[str, dict[str, Any]] = {}
         self._history: deque[dict[str, Any]] = deque(maxlen=5000)
         if self.persistent:
             init_db(self.path)
+
+    def _notify_alert(
+        self,
+        alert: Alert,
+        state: dict[str, Any],
+        reason: str,
+    ) -> None:
+        if not severity_is_enabled(alert.severity):
+            return
+        payload = alert.to_dict()
+        payload.update(state)
+        try:
+            self.notifier(payload, reason)
+        except Exception:
+            # Notification failures must never interrupt detection or persistence.
+            return
 
     def _history_record(
         self,
@@ -187,6 +206,16 @@ class OperationsStore:
                                     now_text,
                                 ),
                             )
+                            self._notify_alert(
+                                alert,
+                                {
+                                    'status': 'open',
+                                    'assigned_to': 'unassigned',
+                                    'due_at': due_at,
+                                    'occurrence_count': max(1, len(alert.event_ids)),
+                                },
+                                'new_alert',
+                            )
                         conn.execute(
                             '''
                             UPDATE alert_operations
@@ -240,6 +269,7 @@ class OperationsStore:
                             now_text,
                         )
                     )
+                    self._notify_alert(alert, record, 'new_alert')
                 else:
                     record.update(
                         {
@@ -385,6 +415,54 @@ class OperationsStore:
             'seconds_to_sla': seconds,
         }
 
+    def _record_alert_sla_breach(self, alert: Alert, state: dict[str, Any]) -> bool:
+        now_text = _iso(self.clock())
+        if self.persistent:
+            with connect(self.path) as conn:
+                exists = conn.execute(
+                    '''
+                    SELECT 1 FROM operation_history
+                    WHERE object_type = 'alert' AND object_id = ?
+                      AND action = 'sla_breached'
+                    LIMIT 1
+                    ''',
+                    (alert.alert_id,),
+                ).fetchone()
+                if exists:
+                    return False
+                self._insert_history(
+                    conn,
+                    self._history_record(
+                        'alert',
+                        alert.alert_id,
+                        'sla_breached',
+                        'sla-monitor',
+                        'Alert response SLA deadline exceeded',
+                        now_text,
+                    ),
+                )
+                conn.commit()
+        else:
+            if any(
+                record['object_type'] == 'alert'
+                and record['object_id'] == alert.alert_id
+                and record['action'] == 'sla_breached'
+                for record in self._history
+            ):
+                return False
+            self._history.appendleft(
+                self._history_record(
+                    'alert',
+                    alert.alert_id,
+                    'sla_breached',
+                    'sla-monitor',
+                    'Alert response SLA deadline exceeded',
+                    now_text,
+                )
+            )
+        self._notify_alert(alert, state, 'sla_breach')
+        return True
+
     def alert_views(self, alerts: Iterable[Alert]) -> list[dict[str, Any]]:
         with self._lock:
             states = self._load_alerts()
@@ -394,7 +472,10 @@ class OperationsStore:
                 state = states.get(alert.alert_id)
                 if state:
                     view.update(state)
-                    view.update(self._sla_fields(state, ALERT_CLOSED_STATUSES))
+                    sla = self._sla_fields(state, ALERT_CLOSED_STATUSES)
+                    view.update(sla)
+                    if sla['sla_breached']:
+                        self._record_alert_sla_breach(alert, view)
                 views.append(view)
             return views
 

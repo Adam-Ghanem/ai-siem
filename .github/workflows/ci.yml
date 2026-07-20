@@ -31,7 +31,8 @@ jobs:
       - name: Type-check critical paths
         run: >-
           mypy --ignore-missing-imports
-          backend/main.py backend/security.py backend/storage.py backend/operations.py
+          backend/main.py backend/security.py backend/storage.py
+          backend/operations.py backend/notifications.py
           backend/detection.py backend/parser.py backend/anomaly.py
           agents/linux_log_agent.py
       - name: Validate JavaScript and shell syntax

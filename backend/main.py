@@ -21,6 +21,7 @@ from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
 from .metrics import calculate_metrics
+from .notifications import notification_status, send_test_notification
 from .operations import OperationNotFound, OperationsStore
 from .parser import parse_events, parser_stats
 from .rules import RULES
@@ -50,7 +51,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
-APP_VERSION = '4.0.0'
+APP_VERSION = '4.1.0'
 STARTED_AT = time.monotonic()
 TRIAGE_ACTIONS = {
     'acknowledged',
@@ -345,6 +346,29 @@ def get_storage_stats(request: Request):
     if AI_SIEM_STORAGE == 'sqlite':
         return storage_stats()
     return {'backend': 'memory', 'stored_events': len(EVENTS)}
+
+
+@app.get('/api/notifications/status')
+def get_notification_status(request: Request):
+    require_admin_access(request)
+    channels = notification_status()
+    return {
+        'enabled': any(channel['enabled'] for channel in channels),
+        'channels': channels,
+    }
+
+
+@app.post('/api/notifications/test')
+def test_notifications(request: Request):
+    require_admin_access(request)
+    result = send_test_notification()
+    audit_log(
+        request,
+        'notification_test',
+        'completed',
+        f'delivered={result.delivered} failed={result.failed}',
+    )
+    return result.to_dict()
 
 
 def _extract_items(payload: Any):

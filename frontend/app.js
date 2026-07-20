@@ -3,6 +3,7 @@ let API = sessionStorage.getItem('AI_SIEM_API') || defaultApi;
 let connected = false;
 let state = {
   session: { role: 'viewer', capabilities: [] },
+  notifications: { enabled: false, channels: [] },
   operations: {},
   metrics: {},
   events: [],
@@ -14,6 +15,7 @@ let state = {
 
 const fallback = {
   session: { role: 'viewer', capabilities: [] },
+  notifications: { enabled: false, channels: [] },
   operations: {},
   metrics: {
     total_events: 0,
@@ -56,6 +58,10 @@ function authHeaders(extra = {}) {
 
 function canOperate() {
   return (state.session.capabilities || []).includes('write:operations');
+}
+
+function canAdminister() {
+  return (state.session.capabilities || []).includes('admin:configuration');
 }
 
 function badge(value) {
@@ -163,8 +169,8 @@ async function load() {
     return false;
   }
   try {
-    const [session, events, alerts, incidents, anomalies, metrics, rules, operations] = await Promise.all([
-      api('/api/session'),
+    const session = await api('/api/session');
+    const [events, alerts, incidents, anomalies, metrics, rules, operations] = await Promise.all([
       api('/api/events'),
       api('/api/alerts'),
       api('/api/incidents'),
@@ -173,8 +179,12 @@ async function load() {
       api('/api/rules'),
       api('/api/operations/summary'),
     ]);
+    const notifications = session.role === 'admin'
+      ? await api('/api/notifications/status').catch(() => ({ enabled: false, channels: [], unavailable: true }))
+      : { enabled: false, channels: [], restricted: true };
     state = {
       session,
+      notifications,
       events,
       alerts,
       incidents,
@@ -219,6 +229,7 @@ function render() {
 
   renderAlerts();
   renderIncidents();
+  renderNotifications();
 
   $('#anomalies-list').innerHTML = state.anomalies.map((anomaly) => {
     const features = Object.entries(anomaly.contributing_features || {})
@@ -252,6 +263,42 @@ function render() {
   renderMitre();
   renderNarrative();
   renderActivity();
+}
+
+function renderNotifications() {
+  const container = $('#notification-channels');
+  const testButton = $('#notification-test');
+  if (!canAdminister()) {
+    container.innerHTML = '<div class="content-item"><span>Admin access is required to inspect notification configuration.</span></div>';
+    testButton.disabled = true;
+    return;
+  }
+  const channels = state.notifications.channels || [];
+  container.innerHTML = channels.length
+    ? channels.map((channel) => `
+        <div class="content-item">
+          <span>${escapeHtml(channel.kind)}</span>
+          ${badge(channel.enabled ? 'Enabled' : 'Disabled')}
+        </div>
+      `).join('')
+    : '<div class="content-item"><span>Notification status is unavailable.</span></div>';
+  testButton.disabled = !state.notifications.enabled;
+}
+
+async function testNotificationChannels() {
+  if (!canAdminister() || !state.notifications.enabled) return;
+  const button = $('#notification-test');
+  const result = $('#notification-result');
+  button.disabled = true;
+  result.textContent = 'Sending bounded test...';
+  try {
+    const response = await requestJson('/api/notifications/test', { method: 'POST' });
+    result.textContent = `${response.delivered || 0} delivered · ${response.failed || 0} failed · ${response.skipped || 0} skipped`;
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = !state.notifications.enabled;
+  }
 }
 
 function renderAlerts() {
@@ -518,6 +565,7 @@ $('#alert-search').oninput = renderAlerts;
 $('#incident-status').onchange = renderIncidents;
 $('#operation-form').onsubmit = saveOperation;
 $('#operation-cancel').onclick = closeOperationEditor;
+$('#notification-test').onclick = testNotificationChannels;
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
   const button = event.target.closest('[data-operation-type]');

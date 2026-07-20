@@ -7,7 +7,8 @@ AI-SIEM is designed as a lightweight full-stack SOC/SIEM platform.
 - **Frontend**: static HTML/CSS/JavaScript dashboard.
 - **Frontend gateway**: Nginx static hosting and same-origin `/api/` proxy in Docker.
 - **Backend**: FastAPI HTTP API with authentication, rate limiting, and audit logging.
-- **Data Layer**: SQLite event and triage persistence plus a bounded in-memory analysis set.
+- **Data Layer**: SQLite event, triage, alert, incident, SLA, and history persistence plus a bounded in-memory analysis set.
+- **Notification dispatcher**: bounded background delivery to explicitly configured generic or Slack HTTPS webhooks.
 - **Detection Content**: typed detection metadata mapped to MITRE ATT&CK.
 - **Parsers**: source-specific parser metadata.
 - **Dashboards**: dashboard metadata definitions.
@@ -24,7 +25,10 @@ flowchart LR
     E --> F[Sliding detection windows]
     F --> G[Cached SOC snapshot]
     G --> H[Alerts, incidents, anomalies, metrics]
-    H --> I[Dashboard and triage]
+    H --> I[Operations store]
+    I --> J[Dashboard and triage]
+    I --> K[Bounded notification queue]
+    K --> L[HTTPS webhook or Slack]
 ```
 
 ## API Flow
@@ -36,6 +40,10 @@ key lives only in the current browser tab.
 Detection evaluation uses per-rule sliding windows instead of rescanning all
 previous events for every event. Alerts, incidents, anomalies, and metrics are
 then cached together until ingestion changes the event generation.
+
+High-severity alert creation and first-time SLA breaches enqueue de-identified
+notifications without waiting for the destination. The dispatcher refuses
+redirects and applies bounded timeouts, retries, debounce, and circuit breaking.
 
 ## Design Goal
 
