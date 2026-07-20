@@ -4,6 +4,8 @@ let connected = false;
 let state = {
   session: { role: 'viewer', capabilities: [] },
   notifications: { enabled: false, channels: [] },
+  readiness: { ready: false, status: 'restricted', checks: [] },
+  report: { overview: {}, alerts_by_severity: {}, incidents_by_status: {} },
   operations: {},
   metrics: {},
   events: [],
@@ -16,6 +18,8 @@ let state = {
 const fallback = {
   session: { role: 'viewer', capabilities: [] },
   notifications: { enabled: false, channels: [] },
+  readiness: { ready: false, status: 'restricted', checks: [] },
+  report: { overview: {}, alerts_by_severity: {}, incidents_by_status: {} },
   operations: {},
   metrics: {
     total_events: 0,
@@ -170,7 +174,7 @@ async function load() {
   }
   try {
     const session = await api('/api/session');
-    const [events, alerts, incidents, anomalies, metrics, rules, operations] = await Promise.all([
+    const [events, alerts, incidents, anomalies, metrics, rules, operations, report] = await Promise.all([
       api('/api/events'),
       api('/api/alerts'),
       api('/api/incidents'),
@@ -178,13 +182,22 @@ async function load() {
       api('/api/metrics'),
       api('/api/rules'),
       api('/api/operations/summary'),
+      api('/api/reports/summary'),
     ]);
-    const notifications = session.role === 'admin'
-      ? await api('/api/notifications/status').catch(() => ({ enabled: false, channels: [], unavailable: true }))
-      : { enabled: false, channels: [], restricted: true };
+    const [notifications, readiness] = session.role === 'admin'
+      ? await Promise.all([
+          api('/api/notifications/status').catch(() => ({ enabled: false, channels: [], unavailable: true })),
+          api('/api/readiness').catch(() => ({ ready: false, status: 'unavailable', checks: [] })),
+        ])
+      : [
+          { enabled: false, channels: [], restricted: true },
+          { ready: false, status: 'restricted', checks: [] },
+        ];
     state = {
       session,
       notifications,
+      readiness,
+      report,
       events,
       alerts,
       incidents,
@@ -230,6 +243,8 @@ function render() {
   renderAlerts();
   renderIncidents();
   renderNotifications();
+  renderReadiness();
+  renderReports();
 
   $('#anomalies-list').innerHTML = state.anomalies.map((anomaly) => {
     const features = Object.entries(anomaly.contributing_features || {})
@@ -283,6 +298,93 @@ function renderNotifications() {
       `).join('')
     : '<div class="content-item"><span>Notification status is unavailable.</span></div>';
   testButton.disabled = !state.notifications.enabled;
+}
+
+function readinessDetail(check) {
+  const detail = check.detail || {};
+  if (check.name === 'credentials') {
+    return `Configured roles: ${(detail.configured_roles || []).join(', ') || 'none'}`;
+  }
+  if (check.name === 'storage') {
+    return `${detail.backend || 'unknown'} · ${Number(detail.stored_events || 0).toLocaleString()} stored events`;
+  }
+  if (check.name === 'analysis') {
+    return `${Number(detail.alerts || 0)} alerts · ${Number(detail.incidents || 0)} incidents · ${Number(detail.open_alerts || 0)} open`;
+  }
+  if (check.name === 'notifications') {
+    const enabled = (detail.channels || []).filter((channel) => channel.enabled).length;
+    return `${enabled} enabled channel${enabled === 1 ? '' : 's'} · optional`;
+  }
+  return 'No sensitive details exposed';
+}
+
+function renderReadiness() {
+  const container = $('#readiness-checks');
+  if (!canAdminister()) {
+    container.innerHTML = '<div class="content-item"><span>Admin access is required to inspect deployment readiness.</span></div>';
+    return;
+  }
+  const checks = state.readiness.checks || [];
+  container.innerHTML = checks.length
+    ? checks.map((check) => `
+        <div class="readiness-item">
+          <div><strong>${escapeHtml(check.name)}</strong><span>${escapeHtml(readinessDetail(check))}</span></div>
+          ${badge(check.status)}
+        </div>
+      `).join('')
+    : '<div class="content-item"><span>Readiness status is unavailable.</span></div>';
+}
+
+function renderReports() {
+  const overview = state.report.overview || {};
+  const cards = [
+    ['Events', Number(overview.total_events || 0).toLocaleString()],
+    ['Alerts', Number(overview.total_alerts || 0).toLocaleString()],
+    ['Incidents', Number(overview.total_incidents || 0).toLocaleString()],
+    ['Open alerts', Number(overview.open_alerts || 0).toLocaleString()],
+    ['SLA breaches', (
+      Number(overview.breached_alert_slas || 0)
+      + Number(overview.breached_incident_slas || 0)
+    ).toLocaleString()],
+    ['Risk score', `${Number(overview.risk_score || 0)}/100`],
+  ];
+  $('#report-summary').innerHTML = cards.map(([label, value]) => `
+    <div class="report-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>
+  `).join('');
+  $('#export-json').disabled = !canOperate();
+  $('#export-csv').disabled = !canOperate();
+}
+
+async function downloadReport(format) {
+  if (!canOperate() || !['json', 'csv'].includes(format)) return;
+  const result = $('#report-result');
+  const buttons = [$('#export-json'), $('#export-csv')];
+  buttons.forEach((button) => { button.disabled = true; });
+  result.textContent = `Preparing de-identified ${format.toUpperCase()} evidence...`;
+  try {
+    const response = await fetch(`${API}/api/reports/export?format=${format}`, {
+      cache: 'no-store',
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `Export returned ${response.status}`);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = `ai-siem-evidence.${format}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+    result.textContent = `${format.toUpperCase()} evidence downloaded without raw targets.`;
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    buttons.forEach((button) => { button.disabled = !canOperate(); });
+  }
 }
 
 async function testNotificationChannels() {
@@ -566,6 +668,8 @@ $('#incident-status').onchange = renderIncidents;
 $('#operation-form').onsubmit = saveOperation;
 $('#operation-cancel').onclick = closeOperationEditor;
 $('#notification-test').onclick = testNotificationChannels;
+$('#export-json').onclick = () => downloadReport('json');
+$('#export-csv').onclick = () => downloadReport('csv');
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
   const button = event.target.closest('[data-operation-type]');

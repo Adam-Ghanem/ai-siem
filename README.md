@@ -49,6 +49,8 @@ flowchart LR
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
 - Role-aware, tab-scoped dashboard authentication with output escaping, alert/case filters, ownership controls, SLA visibility, and real activity charts.
 - Optional generic webhook and Slack alert notifications with de-identification, debounce, retries, and circuit breaking.
+- Aggregate SOC reporting plus bounded JSON and spreadsheet-safe CSV evidence exports, de-identified by default.
+- Admin-only deployment readiness checks that expose health state without returning credentials or destination URLs.
 - Hardened Docker Compose deployment and security CI.
 
 ## Security model
@@ -85,9 +87,9 @@ curl -H "Authorization: Bearer viewer-token" http://localhost:8000/api/events
 
 | Role | Access |
 |---|---|
-| Viewer | Read events, detections, metrics, and SOC operation state |
-| Operator | Viewer access plus ingest, alert assignment, triage, and incident transitions |
-| Admin | Operator access plus parser and storage diagnostics |
+| Viewer | Read events, detections, metrics, aggregate reports, and SOC operation state |
+| Operator | Viewer access plus ingest, alert assignment, triage, incident transitions, and de-identified evidence export |
+| Admin | Operator access plus parser/storage diagnostics, readiness checks, and explicit raw-target export |
 
 Keys assigned to different roles must be unique. Authentication compares
 configured secrets in constant time, and the session endpoint returns only the
@@ -127,6 +129,7 @@ reverse proxy.
 | `AI_SIEM_NOTIFY_CIRCUIT_FAILURES` | `5` | Consecutive failures before opening a circuit |
 | `AI_SIEM_NOTIFY_CIRCUIT_RESET_SECONDS` | `300` | Circuit recovery delay |
 | `AI_SIEM_NOTIFY_QUEUE_SIZE` | `500` | Bounded non-blocking delivery queue |
+| `AI_SIEM_MAX_EXPORT_ROWS` | `2000` | Maximum alert and incident records in one evidence export |
 
 ## Outbound notifications
 
@@ -151,6 +154,39 @@ curl -H "Authorization: Bearer admin-token" \
   http://localhost:8000/api/notifications/status
 curl -X POST -H "Authorization: Bearer admin-token" \
   http://localhost:8000/api/notifications/test
+```
+
+## Reports and deployment readiness
+
+Aggregate report summaries are available to every authenticated role and never
+contain raw entities or evidence. Operators can download a bounded JSON or CSV
+evidence bundle; exports exclude target IPs, hostnames, and users by default.
+CSV cells that could be interpreted as spreadsheet formulas are escaped.
+
+```bash
+curl -H "Authorization: Bearer viewer-token" \
+  http://localhost:8000/api/reports/summary
+curl -OJ -H "Authorization: Bearer operator-token" \
+  'http://localhost:8000/api/reports/export?format=json&limit=500'
+curl -OJ -H "Authorization: Bearer operator-token" \
+  'http://localhost:8000/api/reports/export?format=csv&limit=500'
+```
+
+Raw-target export is an explicit Admin-only request. Use it only when the
+destination is approved to receive that data:
+
+```bash
+curl -OJ -H "Authorization: Bearer admin-token" \
+  'http://localhost:8000/api/reports/export?include_raw_targets=true'
+```
+
+Admins can also inspect bounded readiness signals for credentials, storage,
+analysis, and optional notifications. The response never includes key material
+or notification destinations:
+
+```bash
+curl -H "Authorization: Bearer admin-token" \
+  http://localhost:8000/api/readiness
 ```
 
 ## Run backend locally
@@ -300,6 +336,9 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/storage/stats` | Admin | SQLite storage statistics |
 | `GET` | `/api/notifications/status` | Admin | Channel kind and enabled state, never URLs |
 | `POST` | `/api/notifications/test` | Admin | Send a synthetic channel test |
+| `GET` | `/api/reports/summary` | Viewer+ | Aggregate de-identified SOC report |
+| `GET` | `/api/reports/export` | Operator+ | Bounded JSON/CSV evidence; raw targets require Admin |
+| `GET` | `/api/readiness` | Admin | Safe deployment readiness checks without secrets |
 | `GET` | `/api/triage` | Viewer+ | Recent persisted triage records |
 | `POST` | `/api/ingest` | Operator+ | Ingest events/logs |
 | `POST` | `/api/triage` | Operator+ | Record validated analyst triage |
@@ -344,7 +383,7 @@ python -m compileall backend tests agents
 AI_SIEM_API_KEY=test-token AI_SIEM_RATE_LIMIT_PER_MINUTE=1000 AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE=1000 python -m unittest discover tests -v
 python -m pip install -r requirements-dev.txt
 flake8 --select=F backend agents tests healthcheck.py
-mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/notifications.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
+mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/notifications.py backend/reports.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
 node --check frontend/app.js
 bash -n start.sh
 bandit -q -r backend agents healthcheck.py -lll
@@ -388,5 +427,5 @@ Docker hardening notes:
 - Add Sigma rule import/export.
 - Add OIDC/SSO-backed individual analyst identities.
 - Add scheduled escalation policies and on-call rotations.
-- Add evidence export and scheduled SOC reports.
+- Add scheduled SOC report delivery.
 - Add PostgreSQL or OpenSearch backend option.

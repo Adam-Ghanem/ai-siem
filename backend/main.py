@@ -8,13 +8,13 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .anomaly import detect_anomalies
 from .correlation import correlate
@@ -24,6 +24,12 @@ from .metrics import calculate_metrics
 from .notifications import notification_status, send_test_notification
 from .operations import OperationNotFound, OperationsStore
 from .parser import parse_events, parser_stats
+from .reports import (
+    MAX_EXPORT_ROWS,
+    build_evidence_export,
+    build_report_summary,
+    render_evidence_csv,
+)
 from .rules import RULES
 from .security import (
     MAX_EVENTS_PER_INGEST,
@@ -32,6 +38,7 @@ from .security import (
     MAX_REQUEST_BYTES,
     access_context,
     audit_log,
+    configured_roles,
     enforce_auth,
     enforce_rate_limit,
     require_admin_access,
@@ -51,7 +58,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
-APP_VERSION = '4.1.0'
+APP_VERSION = '4.2.0'
 STARTED_AT = time.monotonic()
 TRIAGE_ACTIONS = {
     'acknowledged',
@@ -369,6 +376,141 @@ def test_notifications(request: Request):
         f'delivered={result.delivered} failed={result.failed}',
     )
     return result.to_dict()
+
+
+def _report_inputs() -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, int],
+]:
+    snapshot = _analysis_snapshot()
+    alert_data = OPERATIONS.alert_views(snapshot['alerts'])
+    incident_data = OPERATIONS.incident_views(snapshot['incidents'])
+    operation_data = OPERATIONS.summary()
+    metric_data = dict(snapshot['metrics'])
+    metric_data['operations'] = operation_data
+    return alert_data, incident_data, metric_data, operation_data
+
+
+@app.get('/api/reports/summary')
+def get_report_summary():
+    alert_data, incident_data, metric_data, operation_data = _report_inputs()
+    return build_report_summary(
+        alert_data,
+        incident_data,
+        metric_data,
+        operation_data,
+    )
+
+
+@app.get('/api/reports/export')
+def export_report(
+    request: Request,
+    export_format: Literal['json', 'csv'] = Query('json', alias='format'),
+    include_raw_targets: bool = False,
+    limit: int = Query(min(500, MAX_EXPORT_ROWS), ge=1, le=MAX_EXPORT_ROWS),
+):
+    require_operator_access(request)
+    if include_raw_targets:
+        require_admin_access(request)
+    alert_data, incident_data, metric_data, operation_data = _report_inputs()
+    bundle = build_evidence_export(
+        alert_data,
+        incident_data,
+        metric_data,
+        operation_data,
+        include_raw_targets=include_raw_targets,
+        limit=limit,
+    )
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    if export_format == 'csv':
+        content = render_evidence_csv(bundle)
+        media_type = 'text/csv'
+    else:
+        content = json.dumps(bundle, ensure_ascii=False, separators=(',', ':'))
+        media_type = 'application/json'
+    filename = f'ai-siem-evidence-{stamp}.{export_format}'
+    audit_log(
+        request,
+        'report_export',
+        'success',
+        (
+            f'format={export_format} rows={bundle["record_count"]} '
+            f'raw_targets={include_raw_targets}'
+        ),
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get('/api/readiness')
+def readiness(request: Request):
+    require_admin_access(request)
+    checks: list[dict[str, Any]] = []
+    roles = configured_roles()
+    checks.append(
+        {
+            'name': 'credentials',
+            'status': 'pass',
+            'detail': {'configured_roles': roles},
+        }
+    )
+    try:
+        storage: dict[str, Any] = (
+            storage_stats()
+            if AI_SIEM_STORAGE == 'sqlite'
+            else {'backend': 'memory', 'stored_events': len(EVENTS)}
+        )
+        checks.append(
+            {
+                'name': 'storage',
+                'status': 'pass',
+                'detail': {
+                    'backend': AI_SIEM_STORAGE,
+                    'stored_events': int(storage.get('stored_events') or 0),
+                },
+            }
+        )
+    except Exception:
+        checks.append({'name': 'storage', 'status': 'fail', 'detail': {}})
+    try:
+        alert_data, incident_data, _, operation_data = _report_inputs()
+        checks.append(
+            {
+                'name': 'analysis',
+                'status': 'pass',
+                'detail': {
+                    'alerts': len(alert_data),
+                    'incidents': len(incident_data),
+                    'open_alerts': operation_data['open_alerts'],
+                },
+            }
+        )
+    except Exception:
+        checks.append({'name': 'analysis', 'status': 'fail', 'detail': {}})
+    channels = notification_status()
+    checks.append(
+        {
+            'name': 'notifications',
+            'status': 'pass',
+            'detail': {
+                'optional': True,
+                'channels': channels,
+            },
+        }
+    )
+    ready = all(check['status'] == 'pass' for check in checks)
+    return {
+        'ready': ready,
+        'status': 'ready' if ready else 'degraded',
+        'service': 'AI-SIEM',
+        'version': APP_VERSION,
+        'checks': checks,
+    }
 
 
 def _extract_items(payload: Any):

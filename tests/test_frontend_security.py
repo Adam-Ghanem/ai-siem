@@ -16,6 +16,11 @@ class FrontendSecurityTests(unittest.TestCase):
         self.assertIn('canOperate()', source)
         self.assertIn("api('/api/notifications/status')", source)
         self.assertIn("requestJson('/api/notifications/test'", source)
+        self.assertIn("api('/api/reports/summary')", source)
+        self.assertIn("api('/api/readiness')", source)
+        self.assertIn('/api/reports/export?format=', source)
+        self.assertIn('without raw targets', source)
+        self.assertNotIn('include_raw_targets=true', source)
         self.assertIn('canAdminister()', source)
 
     def test_every_static_id_selector_exists_in_the_dashboard(self):

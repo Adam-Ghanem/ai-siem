@@ -45,3 +45,22 @@ Outbound notifications are disabled by default and activate only when
 
 Rotate a webhook immediately if it is exposed. Use a secrets manager or
 deployment secret rather than committing it to the repository.
+
+## Reports and evidence export
+
+Report summaries contain aggregate counts only. Evidence export is restricted
+to Operators and Admins, bounded by `AI_SIEM_MAX_EXPORT_ROWS`, and excludes raw
+events and raw evidence.
+
+- Target IPs, hostnames, and users are de-identified by default.
+- Raw-target inclusion requires an explicit query option and Admin access.
+- CSV cells beginning with spreadsheet formula characters are escaped before
+  download.
+- Export audit records include only safe metadata such as format, row count,
+  and whether raw-target mode was requested.
+- Admin readiness responses return role names and component health only. They
+  never return keys, notification URLs, authorization headers, or exception
+  details.
+
+Treat raw-target exports as sensitive operational data. Store and transmit them
+only through organization-approved systems.

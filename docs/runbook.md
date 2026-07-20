@@ -17,6 +17,17 @@
 5. Keep raw-target delivery disabled unless the receiving system is approved for
    that data.
 
+## Evidence export and readiness
+
+1. Use `/api/reports/summary` for routine aggregate reporting.
+2. Export JSON for machine-readable evidence or CSV for analyst review. Both
+   formats are bounded and de-identified by default.
+3. Request raw targets only as Admin and only for an approved investigation
+   destination.
+4. Run `/api/readiness` as Admin before a demonstration or deployment change.
+5. Investigate any failed storage or analysis check before relying on dashboard
+   counts. Notification configuration is optional and may remain disabled.
+
 ## SSH Brute Force
 
 1. Validate source IP and target asset.

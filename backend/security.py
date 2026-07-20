@@ -236,6 +236,12 @@ def role_capabilities(role: AccessRole) -> list[str]:
     return capabilities
 
 
+def configured_roles() -> list[AccessRole]:
+    """Return configured role names without exposing credential material."""
+    roles = {role for role, _, _ in _credential_candidates()}
+    return sorted(roles, key=lambda role: ROLE_RANK[role], reverse=True)
+
+
 def reset_rate_limit_state() -> None:
     with _RATE_LIMIT_LOCK:
         _GLOBAL_BUCKETS.clear()
