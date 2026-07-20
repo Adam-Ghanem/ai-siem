@@ -21,6 +21,12 @@ class FrontendSecurityTests(unittest.TestCase):
         self.assertIn('/api/reports/export?format=', source)
         self.assertIn('without raw targets', source)
         self.assertNotIn('include_raw_targets=true', source)
+        self.assertIn("requestJson('/api/hunt'", source)
+        self.assertIn('Hunt capacity is busy.', source)
+        self.assertIn("method: 'POST'", source)
+        self.assertIn('canViewRawEvents()', source)
+        self.assertIn("includes('read:raw-events')", source)
+        self.assertNotIn('eval(', source)
         self.assertIn('canAdminister()', source)
 
     def test_every_static_id_selector_exists_in_the_dashboard(self):

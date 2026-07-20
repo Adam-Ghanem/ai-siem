@@ -28,6 +28,23 @@
 5. Investigate any failed storage or analysis check before relying on dashboard
    counts. Notification configuration is optional and may remain disabled.
 
+## Threat hunting
+
+1. Start with a time range and one strong literal indicator, then narrow by
+   source, event type, asset, user, status, or IP.
+2. Review the disclosed inspected/available counts. A truncated scope means the
+   hunt covers only the newest configured working set.
+3. Use facet and row pivots to isolate related telemetry without copying query
+   syntax manually.
+4. Keep raw previews disabled for routine review. Enable them only with
+   Operator access when structured fields are insufficient.
+5. Promote confirmed findings into an alert or incident note and preserve the
+   relevant event IDs in the case record.
+6. Treat `429 Threat hunt capacity reached` as backpressure: wait for the
+   advertised `Retry-After` interval, narrow the query, and retry. Increase
+   `AI_SIEM_MAX_CONCURRENT_HUNTS` only after measuring health and hunt latency
+   with representative telemetry.
+
 ## SSH Brute Force
 
 1. Validate source IP and target asset.

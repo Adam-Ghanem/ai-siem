@@ -14,6 +14,7 @@
       <nav>
         <button class="active" data-view="dashboard">Dashboard</button>
         <button data-view="alerts">Alerts</button>
+        <button data-view="hunting">Threat Hunting</button>
         <button data-view="incidents">Incidents</button>
         <button data-view="anomalies">Anomalies</button>
         <button data-view="analysis">Live Analysis</button>
@@ -65,6 +66,37 @@
       </section>
 
       <section id="alerts" class="view"><article class="panel full"><h3>Alert Queue</h3><p>Prioritized detections with ownership, status, and SLA tracking.</p><div class="filter-bar"><input id="alert-search" type="search" placeholder="Search alerts, assets, users..." /><select id="alert-severity"><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><select id="alert-status"><option value="all">All statuses</option><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option><option value="false_positive">False positive</option></select><span id="alert-result-count">0 results</span></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Alert / Rule</th><th>Severity</th><th>Confidence</th><th>Tactic</th><th>Technique</th><th>Asset</th><th>Entity</th><th>Status</th><th>Owner</th><th>SLA</th><th>Action</th></tr></thead><tbody id="alerts-body"></tbody></table></div></article></section>
+      <section id="hunting" class="view">
+        <div class="stack">
+          <article class="panel full">
+            <div class="panel-heading"><div><h3>Threat Hunting Workspace</h3><p>Run literal, structured searches across the bounded active telemetry set. No regex or executable query syntax.</p></div><span class="role-badge">RBAC CONTROLLED</span></div>
+            <form id="hunt-form" class="hunt-form">
+              <label class="hunt-field wide" for="hunt-q"><span>Literal search</span><input id="hunt-q" type="search" maxlength="256" autocomplete="off" placeholder="Process, message, IP, event ID..." /></label>
+              <label class="hunt-field" for="hunt-source"><span>Source</span><input id="hunt-source" maxlength="128" autocomplete="off" placeholder="edr" /></label>
+              <label class="hunt-field" for="hunt-type"><span>Event type</span><input id="hunt-type" maxlength="128" autocomplete="off" placeholder="process_start" /></label>
+              <label class="hunt-field" for="hunt-asset"><span>Asset</span><input id="hunt-asset" maxlength="128" autocomplete="off" placeholder="wkstn-01" /></label>
+              <label class="hunt-field" for="hunt-user"><span>User</span><input id="hunt-user" maxlength="128" autocomplete="off" placeholder="analyst" /></label>
+              <label class="hunt-field" for="hunt-ip"><span>Source IP</span><input id="hunt-ip" maxlength="128" autocomplete="off" placeholder="192.0.2.10" /></label>
+              <label class="hunt-field" for="hunt-status"><span>Status</span><input id="hunt-status" maxlength="128" autocomplete="off" placeholder="failure" /></label>
+              <label class="hunt-field" for="hunt-start"><span>Start time</span><input id="hunt-start" type="datetime-local" /></label>
+              <label class="hunt-field" for="hunt-end"><span>End time</span><input id="hunt-end" type="datetime-local" /></label>
+              <label class="hunt-field" for="hunt-sort"><span>Order</span><select id="hunt-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+              <label class="hunt-field" for="hunt-limit"><span>Result limit</span><select id="hunt-limit"><option value="50">50</option><option value="100" selected>100</option><option value="250">250</option><option value="500">500</option></select></label>
+              <label class="hunt-check" for="hunt-raw"><input id="hunt-raw" type="checkbox" /><span>Include bounded raw-log previews (Operator+)</span></label>
+              <div class="hunt-toolbar"><button id="hunt-submit" class="btn primary" type="submit">Run threat hunt</button><button id="hunt-reset" class="btn ghost" type="button">Reset query</button><span id="hunt-result" role="status"></span></div>
+            </form>
+          </article>
+          <div class="hunt-summary">
+            <div class="hunt-stat"><span>Matches</span><strong id="hunt-matched">0</strong></div>
+            <div class="hunt-stat"><span>Inspected</span><strong id="hunt-scanned">0</strong></div>
+            <div class="hunt-stat"><span>Available</span><strong id="hunt-available">0</strong></div>
+            <div class="hunt-stat"><span>Coverage</span><strong id="hunt-scope">Full active set</strong></div>
+          </div>
+          <article class="panel full"><h3>Investigation pivots</h3><p>Pivot directly from high-frequency entities into a narrower hunt.</p><div class="hunt-facets"><div id="hunt-facet-source" class="facet-group"></div><div id="hunt-facet-type" class="facet-group"></div><div id="hunt-facet-status" class="facet-group"></div><div id="hunt-facet-asset" class="facet-group"></div><div id="hunt-facet-user" class="facet-group"></div><div id="hunt-facet-ip" class="facet-group"></div></div></article>
+          <article class="panel full"><h3>Telemetry results</h3><p>Raw logs are excluded for Viewers and capped for authorized roles.</p><div class="table-wrap"><table><thead><tr><th>Time / ID</th><th>Source / Type</th><th>Asset</th><th>User / IP</th><th>Status</th><th>Evidence preview</th><th>Pivot</th></tr></thead><tbody id="hunt-body"></tbody></table></div><div class="hunt-pagination"><button id="hunt-prev" class="btn ghost" type="button">Previous</button><span id="hunt-page">No results</span><button id="hunt-next" class="btn ghost" type="button">Next</button></div></article>
+          <article class="panel full"><h3>Session hunt history</h3><p>Recent queries stay only in this browser session.</p><div id="hunt-history" class="hunt-history"></div></article>
+        </div>
+      </section>
       <section id="incidents" class="view"><article class="panel full"><h3>Incident Lifecycle</h3><p>Correlated investigations with ownership, SLA, and controlled state transitions.</p><div class="filter-bar"><select id="incident-status"><option value="all">All statuses</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="contained">Contained</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select></div><div id="incidents-list"></div></article></section>
       <section id="anomalies" class="view"><article class="panel full"><h3>Anomaly Review</h3><p>Explainable statistical anomalies with contributing features.</p><div id="anomalies-list"></div></article></section>
       <section id="analysis" class="view"><div class="stack"><article class="panel full"><h3>Live Analysis</h3><p>Automated triage marker for the highest-confidence alert.</p><div class="analysis-box" id="analysis-box"><strong>Waiting for analysis...</strong><span>Click Run Live Analysis.</span></div></article><article class="panel full"><h3>Recommended Response</h3><div id="response-list"></div></article></div></section>

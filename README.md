@@ -23,7 +23,9 @@ flowchart LR
     J --> O
     F --> K[Explainable anomalies]
     F --> L[Metrics]
+    F --> Q[Bounded threat hunting]
     L --> M[FastAPI API]
+    Q --> M
     O --> M
     M --> N[SOC Dashboard]
 ```
@@ -51,6 +53,7 @@ flowchart LR
 - Optional generic webhook and Slack alert notifications with de-identification, debounce, retries, and circuit breaking.
 - Aggregate SOC reporting plus bounded JSON and spreadsheet-safe CSV evidence exports, de-identified by default.
 - Admin-only deployment readiness checks that expose health state without returning credentials or destination URLs.
+- RBAC-aware threat hunting with structured literal search, time/entity filters, bounded scope, facets, click-to-pivot investigation, and safe raw-event gating.
 - Hardened Docker Compose deployment and security CI.
 
 ## Security model
@@ -87,8 +90,8 @@ curl -H "Authorization: Bearer viewer-token" http://localhost:8000/api/events
 
 | Role | Access |
 |---|---|
-| Viewer | Read events, detections, metrics, aggregate reports, and SOC operation state |
-| Operator | Viewer access plus ingest, alert assignment, triage, incident transitions, and de-identified evidence export |
+| Viewer | Read events, detections, metrics, aggregate reports, safe threat-hunt results, and SOC operation state |
+| Operator | Viewer access plus ingest, alert assignment, triage, incident transitions, bounded raw hunt previews, and de-identified evidence export |
 | Admin | Operator access plus parser/storage diagnostics, readiness checks, and explicit raw-target export |
 
 Keys assigned to different roles must be unique. Authentication compares
@@ -130,6 +133,8 @@ reverse proxy.
 | `AI_SIEM_NOTIFY_CIRCUIT_RESET_SECONDS` | `300` | Circuit recovery delay |
 | `AI_SIEM_NOTIFY_QUEUE_SIZE` | `500` | Bounded non-blocking delivery queue |
 | `AI_SIEM_MAX_EXPORT_ROWS` | `2000` | Maximum alert and incident records in one evidence export |
+| `AI_SIEM_MAX_HUNT_SCAN_EVENTS` | `25000` | Maximum recent active events inspected by one hunt |
+| `AI_SIEM_MAX_CONCURRENT_HUNTS` | `2` | Maximum threat hunts executing concurrently; excess requests receive `429` |
 
 ## Outbound notifications
 
@@ -188,6 +193,41 @@ or notification destinations:
 curl -H "Authorization: Bearer admin-token" \
   http://localhost:8000/api/readiness
 ```
+
+## Threat hunting workspace
+
+`POST /api/hunt` accepts a structured JSON body instead of a URL query string,
+so investigation terms are not copied into normal access URLs. Search is
+literal and case-insensitive; there is no regular-expression, shell, SQL, or
+executable expression syntax.
+
+```bash
+curl -X POST http://localhost:8000/api/hunt \
+  -H "Authorization: Bearer viewer-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "q": "powershell",
+    "source": "edr",
+    "status": "success",
+    "start_time": "2026-07-20T00:00:00Z",
+    "sort": "newest",
+    "limit": 100
+  }'
+```
+
+Available exact filters are `source`, `event_type`, `asset`, `user`, `src_ip`,
+`dst_ip`, `status`, and `process_name`. Responses include bounded results,
+coverage metadata, pagination state, time bounds, and top source/type/entity
+facets. The dashboard turns those facets and result entities into one-click
+investigation pivots.
+
+Viewers receive structured results without `raw_log`, and literal search does
+not inspect raw logs in safe mode. Operators and Admins may explicitly request
+a capped raw-log preview and raw-log matching with `"include_raw": true`.
+Hunts run outside the async request loop behind a bounded concurrency gate;
+excess work receives `429` with `Retry-After` instead of degrading unrelated
+API traffic. Hunt terms are never copied into the audit log; only safe counts
+and mode metadata are stored.
 
 ## Run backend locally
 
@@ -320,7 +360,7 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 |---|---|---|---|
 | `GET` | `/api/health` | public | Backend status |
 | `GET` | `/api/session` | Viewer+ | Authenticated role and capabilities |
-| `GET` | `/api/events` | Viewer+ | Normalized events |
+| `GET` | `/api/events` | Viewer+ | Safe normalized events; explicit raw mode requires Operator+ |
 | `GET` | `/api/alerts` | Viewer+ | Detection alerts with ownership and SLA state |
 | `PATCH` | `/api/alerts/{alert_id}` | Operator+ | Assign or transition an alert |
 | `GET` | `/api/incidents` | Viewer+ | Correlated incidents with case state |
@@ -339,6 +379,7 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/reports/summary` | Viewer+ | Aggregate de-identified SOC report |
 | `GET` | `/api/reports/export` | Operator+ | Bounded JSON/CSV evidence; raw targets require Admin |
 | `GET` | `/api/readiness` | Admin | Safe deployment readiness checks without secrets |
+| `POST` | `/api/hunt` | Viewer+ | Bounded structured threat hunt; raw previews require Operator+ |
 | `GET` | `/api/triage` | Viewer+ | Recent persisted triage records |
 | `POST` | `/api/ingest` | Operator+ | Ingest events/logs |
 | `POST` | `/api/triage` | Operator+ | Record validated analyst triage |
@@ -383,7 +424,7 @@ python -m compileall backend tests agents
 AI_SIEM_API_KEY=test-token AI_SIEM_RATE_LIMIT_PER_MINUTE=1000 AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE=1000 python -m unittest discover tests -v
 python -m pip install -r requirements-dev.txt
 flake8 --select=F backend agents tests healthcheck.py
-mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/notifications.py backend/reports.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
+mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/operations.py backend/notifications.py backend/reports.py backend/hunting.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
 node --check frontend/app.js
 bash -n start.sh
 bandit -q -r backend agents healthcheck.py -lll
@@ -419,6 +460,9 @@ Docker hardening notes:
 - Parsers cover practical common formats but are not full ECS/OCSF coverage.
 - No Sigma import/export yet.
 - Anomaly detection is explainable/statistical, not enterprise ML.
+- Threat hunting is intentionally bounded to the most recent active telemetry
+  working set; historical distributed search still needs OpenSearch or another
+  dedicated analytics backend.
 
 ## Roadmap
 

@@ -64,3 +64,31 @@ events and raw evidence.
 
 Treat raw-target exports as sensitive operational data. Store and transmit them
 only through organization-approved systems.
+
+## Threat hunting
+
+Threat hunts use a structured `POST` body so investigation terms do not appear
+in ordinary access URLs. The query engine supports literal matching and
+allowlisted exact fields only; it does not evaluate regular expressions, SQL,
+shell syntax, scripts, or a custom expression language.
+
+- Request size is covered by the global bounded-body reader.
+- Field lengths, timestamps, offsets, result counts, and total scanned events
+  are validated and capped.
+- Hunts inspect the most recent bounded active working set and disclose when
+  that scope was truncated.
+- Viewer responses and literal search exclude `raw_log`. Raw-log matching and
+  previews require Operator or Admin access, are explicitly requested, and are
+  truncated before serialization. The same safe representation is used by the
+  event-list and hunt endpoints.
+- Hunt evaluation runs outside the async request loop behind a bounded,
+  configurable concurrency gate. Saturated deployments fail excess hunts fast
+  with `429` and `Retry-After` so routine health and analyst traffic can proceed.
+- Facets are bounded and generated only from the already matched hunt scope.
+- Audit records contain filter/result counts and raw-mode state only. Literal
+  hunt terms and entity values are not written to the audit log.
+- The dashboard escapes telemetry and facet values before rendering. Browser
+  hunt history remains in memory for the current tab and is not persisted.
+
+Threat hunting is a defensive capability. Run it only against telemetry and
+systems the organization is authorized to monitor.

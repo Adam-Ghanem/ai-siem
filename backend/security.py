@@ -228,9 +228,16 @@ def require_admin_access(request: Request) -> AccessContext:
 
 
 def role_capabilities(role: AccessRole) -> list[str]:
-    capabilities = ['read:events', 'read:detections', 'read:operations']
+    capabilities = [
+        'read:events',
+        'read:detections',
+        'read:operations',
+        'read:hunting',
+    ]
     if ROLE_RANK[role] >= ROLE_RANK['operator']:
-        capabilities.extend(['write:ingest', 'write:operations'])
+        capabilities.extend(
+            ['write:ingest', 'write:operations', 'read:raw-events']
+        )
     if role == 'admin':
         capabilities.extend(['read:parser-diagnostics', 'admin:configuration'])
     return capabilities

@@ -1,11 +1,26 @@
 const defaultApi = window.location.origin;
 let API = sessionStorage.getItem('AI_SIEM_API') || defaultApi;
 let connected = false;
+
+function emptyHuntState() {
+  return {
+    has_run: false,
+    total_matches: 0,
+    events: [],
+    facets: {},
+    scope: { available_events: 0, scanned_events: 0, scan_truncated: false },
+    query: {},
+  };
+}
+
 let state = {
   session: { role: 'viewer', capabilities: [] },
   notifications: { enabled: false, channels: [] },
   readiness: { ready: false, status: 'restricted', checks: [] },
   report: { overview: {}, alerts_by_severity: {}, incidents_by_status: {} },
+  hunt: emptyHuntState(),
+  huntRequest: {},
+  huntHistory: [],
   operations: {},
   metrics: {},
   events: [],
@@ -20,6 +35,9 @@ const fallback = {
   notifications: { enabled: false, channels: [] },
   readiness: { ready: false, status: 'restricted', checks: [] },
   report: { overview: {}, alerts_by_severity: {}, incidents_by_status: {} },
+  hunt: emptyHuntState(),
+  huntRequest: {},
+  huntHistory: [],
   operations: {},
   metrics: {
     total_events: 0,
@@ -68,6 +86,10 @@ function canAdminister() {
   return (state.session.capabilities || []).includes('admin:configuration');
 }
 
+function canViewRawEvents() {
+  return (state.session.capabilities || []).includes('read:raw-events');
+}
+
 function badge(value) {
   const normalized = String(value || '').toLowerCase();
   const cssClass = normalized.includes('critical') || normalized === 'p1'
@@ -109,7 +131,10 @@ async function requestJson(path, options = {}) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.detail || `${path} returned ${response.status}`);
+    const error = new Error(body.detail || `${path} returned ${response.status}`);
+    error.status = response.status;
+    error.retryAfter = response.headers.get('Retry-After');
+    throw error;
   }
   return body;
 }
@@ -173,6 +198,9 @@ async function load() {
     return false;
   }
   try {
+    const currentHunt = state.hunt || emptyHuntState();
+    const currentHuntRequest = { ...(state.huntRequest || {}) };
+    const currentHuntHistory = [...(state.huntHistory || [])];
     const session = await api('/api/session');
     const [events, alerts, incidents, anomalies, metrics, rules, operations, report] = await Promise.all([
       api('/api/events'),
@@ -198,6 +226,9 @@ async function load() {
       notifications,
       readiness,
       report,
+      hunt: currentHunt,
+      huntRequest: currentHuntRequest,
+      huntHistory: currentHuntHistory,
       events,
       alerts,
       incidents,
@@ -245,6 +276,7 @@ function render() {
   renderNotifications();
   renderReadiness();
   renderReports();
+  renderHunt();
 
   $('#anomalies-list').innerHTML = state.anomalies.map((anomaly) => {
     const features = Object.entries(anomaly.contributing_features || {})
@@ -381,10 +413,201 @@ async function downloadReport(format) {
     URL.revokeObjectURL(objectUrl);
     result.textContent = `${format.toUpperCase()} evidence downloaded without raw targets.`;
   } catch (error) {
-    result.textContent = error.message;
+    if (error.status === 429) {
+      const retryAfter = /^\d+$/.test(error.retryAfter || '')
+        ? `${error.retryAfter} second${error.retryAfter === '1' ? '' : 's'}`
+        : 'a short interval';
+      result.textContent = `Hunt capacity is busy. Retry after ${retryAfter}; your filters were preserved.`;
+    } else {
+      result.textContent = error.message;
+    }
   } finally {
     buttons.forEach((button) => { button.disabled = !canOperate(); });
   }
+}
+
+function formatHuntTime(value) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value || '—') : parsed.toLocaleString();
+}
+
+function huntPivotButton(field, value, label) {
+  if (!value) return '';
+  return `<button class="pivot-chip" type="button" data-hunt-field="${field}" data-hunt-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+}
+
+function renderHuntFacet(field, selector, label) {
+  const facets = state.hunt.facets?.[field] || [];
+  $(selector).innerHTML = `
+    <strong>${escapeHtml(label)}</strong>
+    <div>${facets.length
+    ? facets.map((facet) => `
+        <button class="facet-chip" type="button" data-hunt-field="${field}" data-hunt-value="${escapeHtml(facet.value)}">
+          <span>${escapeHtml(facet.value)}</span><b>${Number(facet.count || 0)}</b>
+        </button>
+      `).join('')
+    : '<span class="facet-empty">No values</span>'}</div>
+  `;
+}
+
+function renderHunt() {
+  const hunt = state.hunt || emptyHuntState();
+  const rawToggle = $('#hunt-raw');
+  rawToggle.disabled = !canViewRawEvents();
+  if (!canViewRawEvents()) rawToggle.checked = false;
+
+  $('#hunt-matched').textContent = Number(hunt.total_matches || 0).toLocaleString();
+  $('#hunt-scanned').textContent = Number(hunt.scope?.scanned_events || 0).toLocaleString();
+  $('#hunt-available').textContent = Number(hunt.scope?.available_events || 0).toLocaleString();
+  $('#hunt-scope').textContent = hunt.scope?.scan_truncated ? 'Recent bounded scope' : 'Full active set';
+
+  renderHuntFacet('source', '#hunt-facet-source', 'Sources');
+  renderHuntFacet('event_type', '#hunt-facet-type', 'Event types');
+  renderHuntFacet('status', '#hunt-facet-status', 'Statuses');
+  renderHuntFacet('asset', '#hunt-facet-asset', 'Assets');
+  renderHuntFacet('user', '#hunt-facet-user', 'Users');
+  renderHuntFacet('src_ip', '#hunt-facet-ip', 'Source IPs');
+
+  $('#hunt-body').innerHTML = hunt.has_run
+    ? (hunt.events || []).map((event) => {
+        const evidence = event.raw_log || event.message || event.command_line || 'No preview';
+        return `
+          <tr>
+            <td>${escapeHtml(formatHuntTime(event.timestamp))}<br><small>${escapeHtml(event.id)}</small></td>
+            <td>${escapeHtml(event.source)}<br><small>${escapeHtml(event.event_type)}</small></td>
+            <td>${escapeHtml(event.asset)}</td>
+            <td>${escapeHtml(event.user)}<br><small>${escapeHtml(event.src_ip)}</small></td>
+            <td>${badge(event.status)}</td>
+            <td class="hunt-evidence">${escapeHtml(evidence)}</td>
+            <td><div class="pivot-actions">
+              ${huntPivotButton('asset', event.asset, 'Asset')}
+              ${huntPivotButton('user', event.user, 'User')}
+              ${huntPivotButton('src_ip', event.src_ip, 'IP')}
+            </div></td>
+          </tr>
+        `;
+      }).join('') || '<tr><td colspan="7" class="empty-row">No telemetry matched this hunt.</td></tr>'
+    : '<tr><td colspan="7" class="empty-row">Run a structured hunt to inspect telemetry.</td></tr>';
+
+  const pageStart = hunt.total_matches ? Number(hunt.offset || 0) + 1 : 0;
+  const pageEnd = Number(hunt.offset || 0) + (hunt.events || []).length;
+  $('#hunt-page').textContent = hunt.has_run
+    ? `${pageStart}–${pageEnd} of ${Number(hunt.total_matches || 0).toLocaleString()}`
+    : 'No results';
+  $('#hunt-prev').disabled = !hunt.has_run || Number(hunt.offset || 0) === 0;
+  $('#hunt-next').disabled = !hunt.has_run || !hunt.has_more;
+
+  $('#hunt-history').innerHTML = state.huntHistory.length
+    ? state.huntHistory.map((item) => `
+        <div class="hunt-history-item">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${escapeHtml(item.time)} · ${Number(item.matches || 0)} matches</small>
+        </div>
+      `).join('')
+    : '<div class="content-item"><span>No hunts in this browser session.</span></div>';
+}
+
+function huntTimeValue(selector, name) {
+  const value = $(selector).value;
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return parsed.toISOString();
+}
+
+function buildHuntPayload() {
+  const payload = {
+    q: $('#hunt-q').value.trim(),
+    source: $('#hunt-source').value.trim(),
+    event_type: $('#hunt-type').value.trim(),
+    asset: $('#hunt-asset').value.trim(),
+    user: $('#hunt-user').value.trim(),
+    src_ip: $('#hunt-ip').value.trim(),
+    status: $('#hunt-status').value.trim(),
+    start_time: huntTimeValue('#hunt-start', 'Start time'),
+    end_time: huntTimeValue('#hunt-end', 'End time'),
+    sort: $('#hunt-sort').value,
+    limit: Number($('#hunt-limit').value),
+    include_raw: $('#hunt-raw').checked && canViewRawEvents(),
+  };
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== '' && value !== null),
+  );
+}
+
+function huntHistoryLabel(payload) {
+  const labels = Object.entries(payload)
+    .filter(([key, value]) => !['limit', 'sort', 'include_raw'].includes(key) && value)
+    .map(([key, value]) => `${key.replace('_', ' ')}: ${value}`);
+  return labels.join(' · ') || 'All recent telemetry';
+}
+
+async function runHunt(event, offset = 0, recordHistory = true) {
+  if (event) event.preventDefault();
+  const button = $('#hunt-submit');
+  const result = $('#hunt-result');
+  button.disabled = true;
+  result.textContent = 'Running bounded hunt...';
+  try {
+    const payload = recordHistory
+      ? buildHuntPayload()
+      : { ...(state.huntRequest || {}) };
+    delete payload.offset;
+    if (offset > 0) payload.offset = offset;
+    const response = await requestJson('/api/hunt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    state.hunt = { ...response, has_run: true };
+    state.huntRequest = { ...payload };
+    delete state.huntRequest.offset;
+    if (recordHistory) {
+      state.huntHistory = [{
+        label: huntHistoryLabel(payload),
+        time: new Date().toLocaleTimeString(),
+        matches: response.total_matches || 0,
+      }, ...state.huntHistory].slice(0, 8);
+    }
+    result.textContent = `${response.total_matches || 0} matches in ${response.scope?.scanned_events || 0} inspected events.`;
+    renderHunt();
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function paginateHunt(direction) {
+  const hunt = state.hunt || emptyHuntState();
+  const limit = Number(hunt.limit || $('#hunt-limit').value || 100);
+  const offset = Math.max(0, Number(hunt.offset || 0) + (direction * limit));
+  runHunt(null, offset, false);
+}
+
+function resetHunt() {
+  $('#hunt-form').reset();
+  state.hunt = emptyHuntState();
+  state.huntRequest = {};
+  $('#hunt-result').textContent = '';
+  renderHunt();
+}
+
+function applyHuntPivot(button) {
+  const controls = {
+    source: '#hunt-source',
+    event_type: '#hunt-type',
+    status: '#hunt-status',
+    asset: '#hunt-asset',
+    user: '#hunt-user',
+    src_ip: '#hunt-ip',
+  };
+  const selector = controls[button.dataset.huntField];
+  if (!selector || !button.dataset.huntValue) return;
+  $(selector).value = button.dataset.huntValue;
+  runHunt();
 }
 
 async function testNotificationChannels() {
@@ -670,8 +893,17 @@ $('#operation-cancel').onclick = closeOperationEditor;
 $('#notification-test').onclick = testNotificationChannels;
 $('#export-json').onclick = () => downloadReport('json');
 $('#export-csv').onclick = () => downloadReport('csv');
+$('#hunt-form').onsubmit = runHunt;
+$('#hunt-reset').onclick = resetHunt;
+$('#hunt-prev').onclick = () => paginateHunt(-1);
+$('#hunt-next').onclick = () => paginateHunt(1);
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
+  const huntPivot = event.target.closest('[data-hunt-field]');
+  if (huntPivot) {
+    applyHuntPivot(huntPivot);
+    return;
+  }
   const button = event.target.closest('[data-operation-type]');
   if (button) {
     openOperationEditor(button);

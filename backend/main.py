@@ -12,6 +12,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -20,6 +21,13 @@ from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
+from .hunting import (
+    HuntQuery,
+    MAX_CONCURRENT_HUNTS,
+    MAX_HUNT_SCAN_EVENTS,
+    event_payload,
+    run_hunt,
+)
 from .metrics import calculate_metrics
 from .notifications import notification_status, send_test_notification
 from .operations import OperationNotFound, OperationsStore
@@ -58,7 +66,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
-APP_VERSION = '4.2.0'
+APP_VERSION = '4.3.0'
 STARTED_AT = time.monotonic()
 TRIAGE_ACTIONS = {
     'acknowledged',
@@ -85,6 +93,7 @@ _STATE_LOCK = threading.RLock()
 _STATE_VERSION = 0
 _ANALYSIS_CACHE_KEY: tuple[int, int, str | None] | None = None
 _ANALYSIS_CACHE: dict[str, Any] | None = None
+_HUNT_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_HUNTS)
 
 
 def _load_sample_events():
@@ -232,14 +241,18 @@ def get_session(request: Request):
 
 @app.get('/api/events')
 def get_events(
+    request: Request,
     source: str | None = None,
     event_type: str | None = None,
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    include_raw: bool = False,
     offset: int = Query(0, ge=0, le=1_000_000),
     limit: int = Query(500, ge=1, le=1000),
 ):
+    if include_raw:
+        require_operator_access(request)
     with _STATE_LOCK:
         data = list(EVENTS)
     if source:
@@ -252,7 +265,10 @@ def get_events(
         data = [e for e in data if e.user == user]
     if src_ip:
         data = [e for e in data if e.src_ip == src_ip]
-    return [e.to_dict() for e in _pagination(data, offset, limit)]
+    selected = _pagination(data, offset, limit)
+    if include_raw:
+        audit_log(request, 'raw_event_read', 'success', f'rows={len(selected)}')
+    return [event_payload(event, include_raw) for event in selected]
 
 
 @app.get('/api/alerts')
@@ -577,6 +593,45 @@ async def _read_json_body(request: Request, action: str) -> Any:
     except (UnicodeDecodeError, json.JSONDecodeError):
         audit_log(request, action, 'invalid_json')
         raise HTTPException(status_code=400, detail='Invalid JSON body')
+
+
+@app.post('/api/hunt')
+async def threat_hunt(request: Request):
+    payload = await _read_json_body(request, 'threat_hunt')
+    query = HuntQuery.from_payload(payload)
+    if query.include_raw:
+        require_operator_access(request)
+    with _STATE_LOCK:
+        available_events = len(EVENTS)
+        hunt_scope = list(EVENTS[-MAX_HUNT_SCAN_EVENTS:])
+    if not _HUNT_SLOTS.acquire(blocking=False):
+        audit_log(request, 'threat_hunt', 'capacity_exceeded')
+        raise HTTPException(
+            status_code=429,
+            detail='Threat hunt capacity reached; retry shortly',
+            headers={'Retry-After': '1'},
+        )
+    try:
+        result = await run_in_threadpool(
+            run_hunt,
+            hunt_scope,
+            query,
+            available_events=available_events,
+        )
+    finally:
+        _HUNT_SLOTS.release()
+    audit_log(
+        request,
+        'threat_hunt',
+        'success',
+        (
+            f'filters={query.filter_count()} '
+            f'matches={result["total_matches"]} '
+            f'scanned={result["scope"]["scanned_events"]} '
+            f'raw={query.include_raw}'
+        ),
+    )
+    return result
 
 
 @app.post('/api/ingest')
