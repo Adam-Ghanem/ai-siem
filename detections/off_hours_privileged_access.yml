@@ -1,0 +1,8 @@
+id: DET-BEH-002
+title: Off-Hours Privileged Access
+severity: medium
+tactic: Privilege Escalation
+technique: T1078
+source: linux_auth
+logic: a privileged identity authenticates successfully outside the configured business-hour window
+recommendation: Confirm approval, review session activity, and escalate if the access was unauthorized.

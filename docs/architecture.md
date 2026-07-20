@@ -5,28 +5,37 @@ AI-SIEM is designed as a lightweight full-stack SOC/SIEM platform.
 ## Components
 
 - **Frontend**: static HTML/CSS/JavaScript dashboard.
-- **Backend**: Python standard-library HTTP API.
-- **Data Layer**: JSON demo logs.
-- **Detection Content**: YAML-like detection rules.
+- **Frontend gateway**: Nginx static hosting and same-origin `/api/` proxy in Docker.
+- **Backend**: FastAPI HTTP API with authentication, rate limiting, and audit logging.
+- **Data Layer**: SQLite event and triage persistence plus a bounded in-memory analysis set.
+- **Detection Content**: typed detection metadata mapped to MITRE ATT&CK.
 - **Parsers**: source-specific parser metadata.
 - **Dashboards**: dashboard metadata definitions.
 - **Workflows**: response playbooks.
 
 ## Data Flow
 
-```text
-sample_logs.json
-  -> parser logic
-  -> detection logic
-  -> alert generation
-  -> incident correlation
-  -> triage API
-  -> frontend dashboard
+```mermaid
+flowchart LR
+    A[Log agent or API client] --> B[Authenticated ingest]
+    B --> C[Parser and normalization]
+    C --> D[SQLite]
+    C --> E[Bounded working set]
+    E --> F[Sliding detection windows]
+    F --> G[Cached SOC snapshot]
+    G --> H[Alerts, incidents, anomalies, metrics]
+    H --> I[Dashboard and triage]
 ```
 
 ## API Flow
 
-The frontend fetches backend endpoints every 15 seconds and updates the SOC dashboard.
+The frontend fetches backend endpoints every 15 seconds and updates the SOC
+dashboard. API values are HTML-escaped before template rendering, and the API
+key lives only in the current browser tab.
+
+Detection evaluation uses per-rule sliding windows instead of rescanning all
+previous events for every event. Alerts, incidents, anomalies, and metrics are
+then cached together until ingestion changes the event generation.
 
 ## Design Goal
 

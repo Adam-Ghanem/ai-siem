@@ -1,0 +1,8 @@
+id: DET-BEH-001
+title: Rare External Source for User
+severity: medium
+tactic: Initial Access
+technique: T1078
+source: linux_auth
+logic: a user with an established source baseline authenticates from a new public source address
+recommendation: Validate VPN or travel context and investigate possible credential compromise.

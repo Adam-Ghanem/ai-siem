@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
+import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -21,11 +27,14 @@ from .security import (
     MAX_EVENTS_PER_INGEST,
     MAX_IN_MEMORY_EVENTS,
     MAX_RAW_LOG_BYTES,
+    MAX_REQUEST_BYTES,
     audit_log,
     enforce_auth,
     enforce_rate_limit,
 )
-from .storage import init_db, load_events as load_stored_events, save_events
+from .storage import existing_event_ids, init_db
+from .storage import load_events as load_stored_events
+from .storage import load_triage_records, save_events, save_triage_record
 from .storage import stats as storage_stats
 
 AI_SIEM_HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
@@ -36,21 +45,33 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
+APP_VERSION = '3.4.0'
+STARTED_AT = time.monotonic()
+TRIAGE_ACTIONS = {
+    'acknowledged',
+    'investigating',
+    'false_positive',
+    'resolved',
+    'frontend_review',
+}
+_ALERT_ID_PATTERN = re.compile(r'^[A-Za-z0-9._:-]{1,128}$')
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.3.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        origin.strip()
-        for origin in AI_SIEM_ALLOWED_ORIGIN.split(',')
-        if origin.strip()
+        origin.strip() for origin in AI_SIEM_ALLOWED_ORIGIN.split(',') if origin.strip()
     ],
     allow_credentials=False,
     allow_methods=['GET', 'POST', 'OPTIONS'],
     allow_headers=['content-type', 'authorization'],
 )
 
-TRIAGE = []
+TRIAGE: deque[dict[str, Any]] = deque(maxlen=1000)
+_STATE_LOCK = threading.RLock()
+_STATE_VERSION = 0
+_ANALYSIS_CACHE_KEY: tuple[int, int, str | None] | None = None
+_ANALYSIS_CACHE: dict[str, Any] | None = None
 
 
 def _load_sample_events():
@@ -72,35 +93,87 @@ def load_events():
 
 
 EVENTS = load_events()
+_EVENT_IDS = {event.id for event in EVENTS}
+
+
+def _analysis_snapshot() -> dict[str, Any]:
+    global _ANALYSIS_CACHE, _ANALYSIS_CACHE_KEY
+    with _STATE_LOCK:
+        cache_key = (
+            _STATE_VERSION,
+            len(EVENTS),
+            EVENTS[-1].id if EVENTS else None,
+        )
+        if _ANALYSIS_CACHE_KEY == cache_key and _ANALYSIS_CACHE is not None:
+            return _ANALYSIS_CACHE
+        events_copy = list(EVENTS)
+
+    alert_data = run_detections(events_copy)
+    incident_data = correlate(alert_data)
+    anomaly_data = detect_anomalies(events_copy)
+    snapshot = {
+        'events': events_copy,
+        'alerts': alert_data,
+        'incidents': incident_data,
+        'anomalies': anomaly_data,
+        'metrics': calculate_metrics(events_copy, alert_data, incident_data),
+    }
+
+    with _STATE_LOCK:
+        current_key = (
+            _STATE_VERSION,
+            len(EVENTS),
+            EVENTS[-1].id if EVENTS else None,
+        )
+        if current_key == cache_key:
+            _ANALYSIS_CACHE_KEY = cache_key
+            _ANALYSIS_CACHE = snapshot
+    return snapshot
 
 
 def alerts():
-    return run_detections(EVENTS)
+    return _analysis_snapshot()['alerts']
 
 
 def incidents():
-    return correlate(alerts())
+    return _analysis_snapshot()['incidents']
 
 
 def anomalies():
-    return detect_anomalies(EVENTS)
+    return _analysis_snapshot()['anomalies']
+
+
+def _pagination(data: list[Any], offset: int, limit: int) -> list[Any]:
+    return data[offset : offset + limit]
+
+
+def _secure_response(response):
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    )
+    return response
 
 
 @app.middleware('http')
 async def security_middleware(request: Request, call_next):
-    if request.method == 'OPTIONS':
-        return await call_next(request)
+    if request.method != 'OPTIONS':
+        try:
+            enforce_rate_limit(request)
+            enforce_auth(request)
+        except HTTPException as exc:
+            return _secure_response(
+                JSONResponse(
+                    status_code=exc.status_code,
+                    content={'detail': exc.detail},
+                )
+            )
 
-    try:
-        enforce_rate_limit(request)
-        enforce_auth(request)
-    except HTTPException as exc:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={'detail': exc.detail},
-        )
-
-    return await call_next(request)
+    response = await call_next(request)
+    return _secure_response(response)
 
 
 @app.exception_handler(RequestValidationError)
@@ -123,9 +196,10 @@ def health():
     return {
         'status': 'ok',
         'service': 'AI-SIEM',
+        'version': APP_VERSION,
         'events_loaded': len(EVENTS),
-        'allowed_origin': AI_SIEM_ALLOWED_ORIGIN,
         'storage': AI_SIEM_STORAGE,
+        'uptime_seconds': round(time.monotonic() - STARTED_AT, 1),
     }
 
 
@@ -136,8 +210,11 @@ def get_events(
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    offset: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(500, ge=1, le=1000),
 ):
-    data = EVENTS
+    with _STATE_LOCK:
+        data = list(EVENTS)
     if source:
         data = [e for e in data if e.source == source]
     if event_type:
@@ -148,7 +225,7 @@ def get_events(
         data = [e for e in data if e.user == user]
     if src_ip:
         data = [e for e in data if e.src_ip == src_ip]
-    return [e.to_dict() for e in data]
+    return [e.to_dict() for e in _pagination(data, offset, limit)]
 
 
 @app.get('/api/alerts')
@@ -158,6 +235,8 @@ def get_alerts(
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    offset: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(500, ge=1, le=1000),
 ):
     data = alerts()
     if severity:
@@ -170,17 +249,22 @@ def get_alerts(
         data = [a for a in data if a.user == user]
     if src_ip:
         data = [a for a in data if a.src_ip == src_ip]
-    return [a.to_dict() for a in data]
+    return [a.to_dict() for a in _pagination(data, offset, limit)]
 
 
 @app.get('/api/incidents')
-def get_incidents(status: str | None = None, priority: str | None = None):
+def get_incidents(
+    status: str | None = None,
+    priority: str | None = None,
+    offset: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(500, ge=1, le=1000),
+):
     data = incidents()
     if status:
         data = [i for i in data if i.status == status]
     if priority:
         data = [i for i in data if i.priority == priority]
-    return [i.to_dict() for i in data]
+    return [i.to_dict() for i in _pagination(data, offset, limit)]
 
 
 @app.get('/api/incidents/{incident_id}')
@@ -192,8 +276,11 @@ def get_incident(incident_id: str):
 
 
 @app.get('/api/anomalies')
-def get_anomalies():
-    return [a.to_dict() for a in anomalies()]
+def get_anomalies(
+    offset: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(500, ge=1, le=1000),
+):
+    return [anomaly.to_dict() for anomaly in _pagination(anomalies(), offset, limit)]
 
 
 @app.get('/api/rules')
@@ -208,7 +295,7 @@ def get_attack_coverage():
 
 @app.get('/api/metrics')
 def get_metrics():
-    metrics = calculate_metrics(EVENTS, alerts(), incidents())
+    metrics = dict(_analysis_snapshot()['metrics'])
     unknown = parser_stats()['unknown_events']
     metrics['parsing_failed_events'] = unknown
     metrics['unknown_event_rate_pct'] = round((unknown / max(len(EVENTS), 1)) * 100, 2)
@@ -229,6 +316,8 @@ def get_storage_stats():
 
 def _extract_items(payload: Any):
     if isinstance(payload, dict):
+        if 'logs' in payload and 'events' in payload:
+            raise ValueError('Use either logs or events, not both')
         if 'logs' in payload:
             items = payload['logs']
         elif 'events' in payload:
@@ -240,19 +329,18 @@ def _extract_items(payload: Any):
     else:
         raise ValueError('Request body must be JSON object or list')
 
+    if not isinstance(items, list):
+        raise ValueError('logs and events must be JSON arrays')
+
     if len(items) > MAX_EVENTS_PER_INGEST:
         raise HTTPException(
             status_code=413,
             detail=f'Maximum {MAX_EVENTS_PER_INGEST} events per ingest request',
         )
 
-    if len(EVENTS) + len(items) > MAX_IN_MEMORY_EVENTS:
-        raise HTTPException(
-            status_code=413,
-            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
-        )
-
     for item in items:
+        if not isinstance(item, (str, dict)):
+            raise ValueError('Each event must be a string or JSON object')
         raw = item if isinstance(item, str) else json.dumps(item, separators=(',', ':'))
         if len(raw.encode('utf-8')) > MAX_RAW_LOG_BYTES:
             raise HTTPException(
@@ -263,27 +351,76 @@ def _extract_items(payload: Any):
     return items
 
 
-@app.post('/api/ingest')
-async def ingest(request: Request):
+async def _read_json_body(request: Request, action: str) -> Any:
+    content_length = request.headers.get('content-length')
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            raise HTTPException(status_code=400, detail='Invalid Content-Length')
+        if declared_size < 0:
+            raise HTTPException(status_code=400, detail='Invalid Content-Length')
+        if declared_size > MAX_REQUEST_BYTES:
+            audit_log(request, action, 'request_too_large')
+            raise HTTPException(status_code=413, detail='Request body too large')
+
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > MAX_REQUEST_BYTES:
+            audit_log(request, action, 'request_too_large')
+            raise HTTPException(status_code=413, detail='Request body too large')
+        chunks.append(chunk)
+    body = b''.join(chunks)
     try:
-        payload = await request.json()
-    except Exception:
-        audit_log(request, 'ingest', 'invalid_json')
+        return json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        audit_log(request, action, 'invalid_json')
         raise HTTPException(status_code=400, detail='Invalid JSON body')
 
+
+@app.post('/api/ingest')
+async def ingest(request: Request):
+    global _STATE_VERSION
+    payload = await _read_json_body(request, 'ingest')
     items = _extract_items(payload)
     before_stats = parser_stats()
     parsed = parse_events(items)
-    EVENTS.extend(parsed)
+    with _STATE_LOCK:
+        duplicate_ids = set(_EVENT_IDS)
+        if AI_SIEM_STORAGE == 'sqlite':
+            duplicate_ids.update(existing_event_ids(event.id for event in parsed))
+        unique_events = []
+        pending_ids: set[str] = set()
+        for event in parsed:
+            if event.id in duplicate_ids or event.id in pending_ids:
+                continue
+            unique_events.append(event)
+            pending_ids.add(event.id)
 
-    if AI_SIEM_STORAGE == 'sqlite':
-        save_events(parsed)
+        if len(EVENTS) + len(unique_events) > MAX_IN_MEMORY_EVENTS:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    'Maximum in-memory event capacity '
+                    f'{MAX_IN_MEMORY_EVENTS} reached'
+                ),
+            )
+
+        if AI_SIEM_STORAGE == 'sqlite':
+            save_events(unique_events)
+        EVENTS.extend(unique_events)
+        _EVENT_IDS.update(pending_ids)
+        if unique_events:
+            _STATE_VERSION += 1
 
     after_stats = parser_stats()
-    audit_log(request, 'ingest', 'success', f'count={len(parsed)}')
+    audit_log(request, 'ingest', 'success', f'count={len(unique_events)}')
 
     return {
-        'ingested': len(parsed),
+        'ingested': len(unique_events),
+        'duplicates_ignored': len(parsed) - len(unique_events),
         'total_events': len(EVENTS),
         'storage': AI_SIEM_STORAGE,
         'unknown_events_detected': (
@@ -294,12 +431,7 @@ async def ingest(request: Request):
 
 @app.post('/api/triage')
 async def triage(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        audit_log(request, 'triage', 'invalid_json')
-        raise HTTPException(status_code=400, detail='Invalid JSON body')
-
+    payload = await _read_json_body(request, 'triage')
     if (
         not isinstance(payload, dict)
         or not payload.get('alert_id')
@@ -310,13 +442,41 @@ async def triage(request: Request):
             detail='alert_id and action are required',
         )
 
-    record = {
-        'alert_id': payload['alert_id'],
-        'action': payload['action'],
-        'analyst': payload.get('analyst', 'frontend'),
-        'status': 'recorded',
-    }
-    TRIAGE.append(record)
+    alert_id = str(payload['alert_id']).strip()
+    action = str(payload['action']).strip().lower()
+    analyst = str(payload.get('analyst', 'frontend')).strip()
+    note = str(payload.get('note', '')).strip()
+    if not _ALERT_ID_PATTERN.fullmatch(alert_id):
+        raise HTTPException(status_code=400, detail='Invalid alert_id')
+    if action not in TRIAGE_ACTIONS:
+        raise HTTPException(status_code=400, detail='Unsupported triage action')
+    if not 1 <= len(analyst) <= 80:
+        raise HTTPException(status_code=400, detail='Invalid analyst')
+    if len(note) > 1000:
+        raise HTTPException(status_code=400, detail='Triage note is too long')
+    if alert_id not in {alert.alert_id for alert in alerts()}:
+        raise HTTPException(status_code=404, detail='Alert not found')
 
-    audit_log(request, 'triage', 'success', f"alert_id={payload['alert_id']}")
+    record = {
+        'record_id': f'TRG-{uuid4().hex[:12].upper()}',
+        'alert_id': alert_id,
+        'action': action,
+        'analyst': analyst,
+        'note': note,
+        'status': 'recorded',
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    if AI_SIEM_STORAGE == 'sqlite':
+        save_triage_record(record)
+    else:
+        TRIAGE.append(record)
+
+    audit_log(request, 'triage', 'success', f'alert_id={alert_id}')
     return record
+
+
+@app.get('/api/triage')
+def get_triage(limit: int = Query(100, ge=1, le=1000)):
+    if AI_SIEM_STORAGE == 'sqlite':
+        return load_triage_records(limit=limit)
+    return list(TRIAGE)[-limit:][::-1]

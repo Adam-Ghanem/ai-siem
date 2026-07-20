@@ -30,7 +30,13 @@
     <main class="main">
       <header class="topbar">
         <div><span class="label">Security Operations Command Center</span><h1 id="view-title">Dashboard</h1></div>
-        <div class="actions"><div class="clock" id="clock">--:--:--</div><button id="refresh" class="btn ghost">Refresh</button><button id="run-analysis" class="btn primary">Run Live Analysis</button></div>
+        <div class="actions">
+          <div class="clock" id="clock">--:--:--</div>
+          <button id="connection-settings" class="btn ghost">Connection</button>
+          <button id="disconnect" class="btn ghost">Disconnect</button>
+          <button id="refresh" class="btn ghost">Refresh</button>
+          <button id="run-analysis" class="btn primary">Run Live Analysis</button>
+        </div>
       </header>
 
       <section id="dashboard" class="view active">
@@ -62,6 +68,21 @@
       <section id="content" class="view"><div class="cards"><article class="panel"><h3>Source Distribution</h3><div id="source-distribution"></div></article><article class="panel"><h3>Event Type Distribution</h3><div id="event-type-distribution"></div></article></div></section>
       <section id="reports" class="view"><article class="panel full"><h3>Security Report Summary</h3><p>Use API outputs to produce incident reports and portfolio screenshots.</p><div class="cards" id="reports-list"><div class="mini"><strong>README</strong><br><span>Architecture, endpoints, limitations, roadmap</span></div><div class="mini"><strong>Tests</strong><br><span>Parser, detection, correlation, anomaly, metrics, API</span></div></div></article></section>
     </main>
+  </div>
+  <div class="auth-gate" id="auth-gate" hidden>
+    <form class="auth-card" id="connection-form">
+      <img src="./assets/logo.svg" alt="AI-SIEM" />
+      <span class="eyebrow">SECURE SOC ACCESS</span>
+      <h2>Connect to AI-SIEM</h2>
+      <p>The API key stays in this browser tab and is cleared when the tab closes.</p>
+      <label for="api-url">API URL</label>
+      <input id="api-url" name="api-url" type="url" autocomplete="url" required />
+      <label for="api-key">API key</label>
+      <input id="api-key" name="api-key" type="password" autocomplete="off" required />
+      <p class="connection-error" id="connection-error" role="alert"></p>
+      <button class="btn primary" id="connect-submit" type="submit">Connect securely</button>
+      <small>Remote connections require HTTPS. Localhost may use HTTP for development.</small>
+    </form>
   </div>
   <script src="./app.js"></script>
 </body>

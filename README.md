@@ -28,20 +28,24 @@ flowchart LR
 ## Main features
 
 - FastAPI backend with SOC-focused endpoints.
-- Bearer-token API authentication with `AI_SIEM_API_KEY`.
+- Constant-time Bearer-token authentication with `AI_SIEM_API_KEY`.
 - CORS support for the dashboard, including browser preflight requests.
 - SQLite event persistence in `data/ai_siem.db` by default.
+- Persistent analyst triage records with validated actions and alert references.
 - Real log tailing agent for Linux auth logs and web access logs.
-- Ingest limits for request size, log size, and total loaded events.
-- Simple in-memory per-IP rate limiting.
-- Audit logging to `logs/audit.log` without logging secrets.
+- Ingest limits for total request size, event size, batch size, and loaded events.
+- Duplicate event-ID suppression across memory and SQLite.
+- Thread-safe per-client rate limiting with proxy headers disabled by default.
+- Sanitized audit logging to `logs/audit.log` without logging secrets.
 - Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
+- Linear-time sliding detection windows and cached SOC analysis snapshots.
 - MITRE ATT&CK coverage summary for implemented rule metadata.
 - Alert suppression and duplicate-noise reduction for rare-source-IP events.
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
-- Docker Compose support and security CI.
+- Tab-scoped dashboard authentication, output escaping, and real activity charts.
+- Hardened Docker Compose deployment and security CI.
 
 ## Security model
 
@@ -69,18 +73,27 @@ Example:
 curl -H "Authorization: Bearer dev-token" http://localhost:8000/api/events
 ```
 
-The frontend reads the token from browser localStorage:
+The dashboard has a connection screen for the API URL and key. The key is kept
+in `sessionStorage`, so it is scoped to the current browser tab and cleared when
+that tab closes. Remote API URLs must use HTTPS; HTTP is accepted only for
+localhost development.
 
-```js
-localStorage.setItem('AI_SIEM_API', 'http://localhost:8000')
-localStorage.setItem('AI_SIEM_API_KEY', 'dev-token')
-```
+`X-Forwarded-For` is ignored unless `AI_SIEM_TRUST_PROXY_HEADERS=true`. Enable
+that setting only when the backend is reachable exclusively through a trusted
+reverse proxy.
 
-For WSL-to-Windows browser access, set `AI_SIEM_API` to your WSL IP, for example:
+### Security-related configuration
 
-```js
-localStorage.setItem('AI_SIEM_API', 'http://172.30.9.161:8000')
-```
+| Variable | Default | Purpose |
+|---|---:|---|
+| `AI_SIEM_API_KEY` | empty | Required API secret |
+| `AI_SIEM_RATE_LIMIT_PER_MINUTE` | `60` | Per-client global request limit |
+| `AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE` | `10` | Per-client ingest request limit |
+| `AI_SIEM_MAX_REQUEST_BYTES` | `1048576` | Maximum JSON request body |
+| `AI_SIEM_MAX_EVENTS_PER_INGEST` | `100` | Maximum batch count |
+| `AI_SIEM_MAX_RAW_LOG_BYTES` | `10240` | Maximum individual raw event |
+| `AI_SIEM_MAX_IN_MEMORY_EVENTS` | `10000` | Analysis working-set limit |
+| `AI_SIEM_TRUST_PROXY_HEADERS` | `false` | Trust validated proxy client IPs |
 
 ## Run backend locally
 
@@ -131,25 +144,32 @@ Open:
 http://localhost:5173
 ```
 
-Then configure localStorage from browser DevTools Console:
+Enter `http://localhost:8000` and the configured API key in the connection
+screen. No browser DevTools setup is required.
 
-```js
-localStorage.setItem('AI_SIEM_API', 'http://localhost:8000')
-localStorage.setItem('AI_SIEM_API_KEY', 'dev-token')
-location.reload()
+Alternatively, start both services with the checked startup script:
+
+```bash
+export AI_SIEM_API_KEY='replace-with-a-strong-random-key'
+./start.sh
 ```
 
 ## Real log ingestion
 
 Start the backend first, then run the agent.
 
+Keep the token out of the process list by setting it in the environment:
+
+```bash
+export AI_SIEM_API_KEY='dev-token'
+```
+
 Linux auth logs:
 
 ```bash
 python agents/linux_log_agent.py \
   --file /var/log/auth.log \
-  --api http://localhost:8000 \
-  --token dev-token
+  --api http://localhost:8000
 ```
 
 Kali/RHEL/Fedora-style auth logs:
@@ -157,8 +177,7 @@ Kali/RHEL/Fedora-style auth logs:
 ```bash
 python agents/linux_log_agent.py \
   --file /var/log/secure \
-  --api http://localhost:8000 \
-  --token dev-token
+  --api http://localhost:8000
 ```
 
 Web access logs:
@@ -167,8 +186,7 @@ Web access logs:
 python agents/linux_log_agent.py \
   --file /var/log/nginx/access.log \
   --file /var/log/apache2/access.log \
-  --api http://localhost:8000 \
-  --token dev-token
+  --api http://localhost:8000
 ```
 
 To ingest an existing lab log file from the beginning:
@@ -177,11 +195,13 @@ To ingest an existing lab log file from the beginning:
 python agents/linux_log_agent.py \
   --file ./lab/auth.log \
   --from-start \
-  --api http://localhost:8000 \
-  --token dev-token
+  --api http://localhost:8000
 ```
 
-The agent stores offsets in `.agent_state/linux_offsets.json` so it does not resend the same lines every run.
+The agent stores offsets atomically in `.agent_state/linux_offsets.json`. An
+offset advances only after the backend accepts the batch, so a temporary
+network/backend failure does not silently drop log lines. Redirects are not
+followed, response reads are capped, and non-local remote APIs require HTTPS.
 
 ## Manual real-event test
 
@@ -211,8 +231,11 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/anomalies` | required | Explainable anomalies |
 | `GET` | `/api/parser/stats` | required | Parser visibility stats |
 | `GET` | `/api/storage/stats` | required | SQLite storage statistics |
+| `GET` | `/api/triage` | required | Recent persisted triage records |
 | `POST` | `/api/ingest` | required | Ingest events/logs |
-| `POST` | `/api/triage` | required | Record analyst triage |
+| `POST` | `/api/triage` | required | Record validated analyst triage |
+
+List endpoints accept bounded `offset` and `limit` query parameters.
 
 ## Detection coverage
 
@@ -250,7 +273,12 @@ Example fields:
 ```bash
 python -m compileall backend tests agents
 AI_SIEM_API_KEY=test-token AI_SIEM_RATE_LIMIT_PER_MINUTE=1000 AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE=1000 python -m unittest discover tests -v
-bandit -q -r backend agents -lll
+python -m pip install -r requirements-dev.txt
+flake8 --select=F backend agents tests healthcheck.py
+mypy --ignore-missing-imports backend/main.py backend/security.py backend/storage.py backend/detection.py backend/parser.py backend/anomaly.py agents/linux_log_agent.py
+node --check frontend/app.js
+bash -n start.sh
+bandit -q -r backend agents healthcheck.py -lll
 pip-audit -r requirements.txt
 ```
 
@@ -263,16 +291,21 @@ docker compose up --build
 
 Docker hardening notes:
 
-- Uses `python:3.11-slim`.
-- Runs as a non-root `appuser`.
-- Adds `HEALTHCHECK` for `/api/health`.
+- Requires an explicit API key; there is no default deployment secret.
+- Runs the backend as a non-root `appuser` with all Linux capabilities dropped.
+- Uses read-only container filesystems with dedicated writable data/log volumes.
+- Serves the static frontend through Nginx with a same-origin API proxy and
+  browser security headers; no nonexistent Node/Vite build is required.
+- Binds host ports to `127.0.0.1` by default.
+- Adds a backend `HEALTHCHECK` and waits for it before starting the frontend.
 - Uses `.dockerignore` to keep secrets, Git metadata, logs, venvs, and node modules out of the build context.
 
 ## Current limitations
 
 - SQLite is good for the lab but not for distributed production SIEM scale.
 - No RBAC or multi-user authorization model yet.
-- No TLS termination or secrets manager integration yet.
+- Docker is localhost-only by default; production still needs managed TLS and a
+  secrets manager at the deployment edge.
 - Parsers cover practical common formats but are not full ECS/OCSF coverage.
 - No Sigma import/export yet.
 - Anomaly detection is explainable/statistical, not enterprise ML.
@@ -282,6 +315,6 @@ Docker hardening notes:
 - Add Windows Event Log collector.
 - Add Sysmon parser and Windows Event IDs 4624/4625/4688/4104/4720/4732.
 - Add Sigma rule import/export.
-- Add analyst notes persisted in SQLite.
-- Add dashboard filters and alert acknowledgement workflow.
+- Add RBAC-backed analyst identities and case ownership.
+- Add dashboard filters and full incident-state transitions.
 - Add PostgreSQL or OpenSearch backend option.

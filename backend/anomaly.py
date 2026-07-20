@@ -93,10 +93,11 @@ def detect_anomalies(events: list[Event]) -> list[Anomaly]:
         if event.user and event.src_ip and event.status == "success":
             sources = known_sources[event.user]
             has_baseline = len(sources) >= MIN_BASELINE_SOURCES
-            is_new_external_source = event.src_ip not in sources and _is_external_ip(event.src_ip)
+            is_new_external_source = event.src_ip not in sources and _is_external_ip(
+                event.src_ip
+            )
             under_limit = (
-                rare_source_counts[event.user]
-                < MAX_RARE_SOURCE_ANOMALIES_PER_USER
+                rare_source_counts[event.user] < MAX_RARE_SOURCE_ANOMALIES_PER_USER
             )
             if has_baseline and is_new_external_source and under_limit:
                 rare_source_counts[event.user] += 1
@@ -123,7 +124,7 @@ def detect_anomalies(events: list[Event]) -> list[Anomaly]:
             anomalies.append(
                 Anomaly(
                     f"AN-{uuid4().hex[:10]}",
-                    event.user,
+                    event.user or "unknown",
                     0.76,
                     "Privileged access outside business hours",
                     {
@@ -144,7 +145,10 @@ def detect_anomalies(events: list[Event]) -> list[Anomaly]:
             if (
                 seen_processes
                 and process not in seen_processes
-                and any(value in event.command_line.lower() for value in suspicious_arguments)
+                and any(
+                    value in event.command_line.lower()
+                    for value in suspicious_arguments
+                )
             ):
                 anomalies.append(
                     Anomaly(

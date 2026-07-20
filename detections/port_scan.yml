@@ -1,4 +1,4 @@
-id: DET-003
+id: DET-NET-001
 title: Internal Port Scan
 severity: medium
 tactic: Discovery
