@@ -38,7 +38,13 @@ def validate_api_url(value: str) -> str:
 
 
 API_BASE = validate_api_url(os.getenv('AI_SIEM_API_URL', 'http://localhost:8000'))
-API_KEY = os.getenv('AI_SIEM_API_KEY', '').strip()
+API_KEY = (
+    os.getenv('AI_SIEM_HEALTHCHECK_KEY', '')
+    or os.getenv('AI_SIEM_VIEWER_KEY', '')
+    or os.getenv('AI_SIEM_OPERATOR_KEY', '')
+    or os.getenv('AI_SIEM_ADMIN_KEY', '')
+    or os.getenv('AI_SIEM_API_KEY', '')
+).strip()
 
 
 def check(path: str, requires_auth: bool) -> None:

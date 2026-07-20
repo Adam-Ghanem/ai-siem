@@ -21,6 +21,7 @@ from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
 from .metrics import calculate_metrics
+from .operations import OperationNotFound, OperationsStore
 from .parser import parse_events, parser_stats
 from .rules import RULES
 from .security import (
@@ -28,9 +29,13 @@ from .security import (
     MAX_IN_MEMORY_EVENTS,
     MAX_RAW_LOG_BYTES,
     MAX_REQUEST_BYTES,
+    access_context,
     audit_log,
     enforce_auth,
     enforce_rate_limit,
+    require_admin_access,
+    require_operator_access,
+    role_capabilities,
 )
 from .storage import existing_event_ids, init_db
 from .storage import load_events as load_stored_events
@@ -45,7 +50,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
-APP_VERSION = '3.4.0'
+APP_VERSION = '4.0.0'
 STARTED_AT = time.monotonic()
 TRIAGE_ACTIONS = {
     'acknowledged',
@@ -63,7 +68,7 @@ app.add_middleware(
         origin.strip() for origin in AI_SIEM_ALLOWED_ORIGIN.split(',') if origin.strip()
     ],
     allow_credentials=False,
-    allow_methods=['GET', 'POST', 'OPTIONS'],
+    allow_methods=['GET', 'POST', 'PATCH', 'OPTIONS'],
     allow_headers=['content-type', 'authorization'],
 )
 
@@ -94,6 +99,7 @@ def load_events():
 
 EVENTS = load_events()
 _EVENT_IDS = {event.id for event in EVENTS}
+OPERATIONS = OperationsStore(persistent=AI_SIEM_STORAGE == 'sqlite')
 
 
 def _analysis_snapshot() -> dict[str, Any]:
@@ -111,6 +117,8 @@ def _analysis_snapshot() -> dict[str, Any]:
     alert_data = run_detections(events_copy)
     incident_data = correlate(alert_data)
     anomaly_data = detect_anomalies(events_copy)
+    OPERATIONS.sync_alerts(alert_data)
+    OPERATIONS.sync_incidents(incident_data)
     snapshot = {
         'events': events_copy,
         'alerts': alert_data,
@@ -199,7 +207,18 @@ def health():
         'version': APP_VERSION,
         'events_loaded': len(EVENTS),
         'storage': AI_SIEM_STORAGE,
+        'rbac': True,
         'uptime_seconds': round(time.monotonic() - STARTED_AT, 1),
+    }
+
+
+@app.get('/api/session')
+def get_session(request: Request):
+    access = access_context(request)
+    return {
+        'authenticated': True,
+        'role': access.role,
+        'capabilities': role_capabilities(access.role),
     }
 
 
@@ -235,43 +254,54 @@ def get_alerts(
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    status: str | None = None,
+    assigned_to: str | None = None,
     offset: int = Query(0, ge=0, le=1_000_000),
     limit: int = Query(500, ge=1, le=1000),
 ):
-    data = alerts()
+    data = OPERATIONS.alert_views(alerts())
     if severity:
-        data = [a for a in data if a.severity == severity]
+        data = [alert for alert in data if alert['severity'] == severity]
     if tactic:
-        data = [a for a in data if a.tactic == tactic]
+        data = [alert for alert in data if alert['tactic'] == tactic]
     if asset:
-        data = [a for a in data if a.asset == asset]
+        data = [alert for alert in data if alert['asset'] == asset]
     if user:
-        data = [a for a in data if a.user == user]
+        data = [alert for alert in data if alert['user'] == user]
     if src_ip:
-        data = [a for a in data if a.src_ip == src_ip]
-    return [a.to_dict() for a in _pagination(data, offset, limit)]
+        data = [alert for alert in data if alert['src_ip'] == src_ip]
+    if status:
+        data = [alert for alert in data if alert.get('status') == status]
+    if assigned_to:
+        data = [alert for alert in data if alert.get('assigned_to') == assigned_to]
+    return _pagination(data, offset, limit)
 
 
 @app.get('/api/incidents')
 def get_incidents(
     status: str | None = None,
     priority: str | None = None,
+    assigned_to: str | None = None,
     offset: int = Query(0, ge=0, le=1_000_000),
     limit: int = Query(500, ge=1, le=1000),
 ):
-    data = incidents()
+    data = OPERATIONS.incident_views(incidents())
     if status:
-        data = [i for i in data if i.status == status]
+        data = [incident for incident in data if incident['status'] == status]
     if priority:
-        data = [i for i in data if i.priority == priority]
-    return [i.to_dict() for i in _pagination(data, offset, limit)]
+        data = [incident for incident in data if incident['priority'] == priority]
+    if assigned_to:
+        data = [
+            incident for incident in data if incident.get('assigned_to') == assigned_to
+        ]
+    return _pagination(data, offset, limit)
 
 
 @app.get('/api/incidents/{incident_id}')
 def get_incident(incident_id: str):
-    for incident in incidents():
-        if incident.incident_id == incident_id:
-            return incident.to_dict()
+    for incident in OPERATIONS.incident_views(incidents()):
+        if incident['incident_id'] == incident_id:
+            return incident
     raise HTTPException(status_code=404, detail='Incident not found')
 
 
@@ -299,16 +329,19 @@ def get_metrics():
     unknown = parser_stats()['unknown_events']
     metrics['parsing_failed_events'] = unknown
     metrics['unknown_event_rate_pct'] = round((unknown / max(len(EVENTS), 1)) * 100, 2)
+    metrics['operations'] = OPERATIONS.summary()
     return metrics
 
 
 @app.get('/api/parser/stats')
-def get_parser_stats():
+def get_parser_stats(request: Request):
+    require_admin_access(request)
     return parser_stats()
 
 
 @app.get('/api/storage/stats')
-def get_storage_stats():
+def get_storage_stats(request: Request):
+    require_admin_access(request)
     if AI_SIEM_STORAGE == 'sqlite':
         return storage_stats()
     return {'backend': 'memory', 'stored_events': len(EVENTS)}
@@ -383,6 +416,7 @@ async def _read_json_body(request: Request, action: str) -> Any:
 @app.post('/api/ingest')
 async def ingest(request: Request):
     global _STATE_VERSION
+    require_operator_access(request)
     payload = await _read_json_body(request, 'ingest')
     items = _extract_items(payload)
     before_stats = parser_stats()
@@ -431,6 +465,7 @@ async def ingest(request: Request):
 
 @app.post('/api/triage')
 async def triage(request: Request):
+    access = require_operator_access(request)
     payload = await _read_json_body(request, 'triage')
     if (
         not isinstance(payload, dict)
@@ -457,6 +492,18 @@ async def triage(request: Request):
     if alert_id not in {alert.alert_id for alert in alerts()}:
         raise HTTPException(status_code=404, detail='Alert not found')
 
+    if action != 'frontend_review':
+        try:
+            OPERATIONS.update_alert(
+                alert_id,
+                status=action,
+                assigned_to=analyst,
+                resolution_note=note if note else None,
+                actor=analyst or f'{access.role}-session',
+            )
+        except OperationNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     record = {
         'record_id': f'TRG-{uuid4().hex[:12].upper()}',
         'alert_id': alert_id,
@@ -480,3 +527,93 @@ def get_triage(limit: int = Query(100, ge=1, le=1000)):
     if AI_SIEM_STORAGE == 'sqlite':
         return load_triage_records(limit=limit)
     return list(TRIAGE)[-limit:][::-1]
+
+
+def _operation_update_payload(payload: Any, default_actor: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError('Request body must be a JSON object')
+    allowed = {'status', 'assigned_to', 'resolution_note'}
+    unknown = set(payload) - allowed
+    if unknown:
+        raise ValueError(f'Unsupported operation fields: {", ".join(sorted(unknown))}')
+    if not ({'status', 'assigned_to', 'resolution_note'} & set(payload)):
+        raise ValueError('Provide status, assigned_to, or resolution_note')
+    for key in allowed:
+        if (
+            key in payload
+            and payload[key] is not None
+            and not isinstance(payload[key], str)
+        ):
+            raise ValueError(f'{key} must be a string')
+    return {
+        'status': payload.get('status'),
+        'assigned_to': payload.get('assigned_to'),
+        'resolution_note': payload.get('resolution_note'),
+        'actor': default_actor,
+    }
+
+
+@app.patch('/api/alerts/{alert_id}')
+async def update_alert(alert_id: str, request: Request):
+    access = require_operator_access(request)
+    if not _ALERT_ID_PATTERN.fullmatch(alert_id):
+        raise HTTPException(status_code=400, detail='Invalid alert_id')
+    alerts()
+    values = _operation_update_payload(
+        await _read_json_body(request, 'alert_update'),
+        f'{access.role}-session',
+    )
+    try:
+        updated = OPERATIONS.update_alert(alert_id, **values)
+    except OperationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit_log(
+        request,
+        'alert_update',
+        'success',
+        f'alert_id={alert_id} status={updated["status"]}',
+    )
+    return updated
+
+
+@app.patch('/api/incidents/{incident_id}')
+async def update_incident(incident_id: str, request: Request):
+    access = require_operator_access(request)
+    if not _ALERT_ID_PATTERN.fullmatch(incident_id):
+        raise HTTPException(status_code=400, detail='Invalid incident_id')
+    incidents()
+    values = _operation_update_payload(
+        await _read_json_body(request, 'incident_update'),
+        f'{access.role}-session',
+    )
+    try:
+        updated = OPERATIONS.update_incident(incident_id, **values)
+    except OperationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit_log(
+        request,
+        'incident_update',
+        'success',
+        f'incident_id={incident_id} status={updated["status"]}',
+    )
+    return updated
+
+
+@app.get('/api/operations/summary')
+def get_operations_summary():
+    _analysis_snapshot()
+    return OPERATIONS.summary()
+
+
+@app.get('/api/operations/history')
+def get_operations_history(
+    object_type: str | None = None,
+    object_id: str | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    _analysis_snapshot()
+    return OPERATIONS.history(
+        object_type=object_type,
+        object_id=object_id,
+        limit=limit,
+    )

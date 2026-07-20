@@ -6,9 +6,10 @@ import re
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Deque
+from typing import Deque, Literal
 
 from fastapi import HTTPException, Request
 
@@ -37,6 +38,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 API_KEY = os.getenv('AI_SIEM_API_KEY', '').strip()
+ADMIN_API_KEY = os.getenv('AI_SIEM_ADMIN_KEY', '').strip()
+OPERATOR_API_KEY = os.getenv('AI_SIEM_OPERATOR_KEY', '').strip()
+VIEWER_API_KEY = os.getenv('AI_SIEM_VIEWER_KEY', '').strip()
 GLOBAL_RATE_LIMIT_PER_MINUTE = _bounded_int(
     'AI_SIEM_RATE_LIMIT_PER_MINUTE', 60, 1, 100_000
 )
@@ -60,6 +64,49 @@ _GLOBAL_BUCKETS: dict[str, Deque[float]] = {}
 _INGEST_BUCKETS: dict[str, Deque[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
 _CONTROL_CHARACTERS = re.compile(r'[\x00-\x1f\x7f]+')
+
+AccessRole = Literal['admin', 'operator', 'viewer']
+ROLE_RANK: dict[AccessRole, int] = {'viewer': 1, 'operator': 2, 'admin': 3}
+
+
+@dataclass(frozen=True)
+class AccessContext:
+    role: AccessRole
+    credential: str
+
+
+def _credential_candidates() -> list[tuple[AccessRole, str, str]]:
+    candidates: list[tuple[AccessRole, str, str]] = [
+        ('admin', ADMIN_API_KEY, 'admin-key'),
+        ('admin', API_KEY, 'legacy-admin-key'),
+        ('operator', OPERATOR_API_KEY, 'operator-key'),
+        ('viewer', VIEWER_API_KEY, 'viewer-key'),
+    ]
+    unique: list[tuple[AccessRole, str, str]] = []
+    seen: set[tuple[AccessRole, str]] = set()
+    for role, key, name in candidates:
+        if key and (role, key) not in seen:
+            unique.append((role, key, name))
+            seen.add((role, key))
+    return unique
+
+
+def _validate_credential_configuration() -> None:
+    candidates = _credential_candidates()
+    if not candidates:
+        raise RuntimeError(
+            'Configure AI_SIEM_ADMIN_KEY, AI_SIEM_OPERATOR_KEY, '
+            'AI_SIEM_VIEWER_KEY, or the legacy AI_SIEM_API_KEY'
+        )
+    role_by_key: dict[str, AccessRole] = {}
+    for role, key, _ in candidates:
+        existing = role_by_key.get(key)
+        if existing is not None and existing != role:
+            raise RuntimeError('API keys assigned to different roles must be unique')
+        role_by_key[key] = role
+
+
+_validate_credential_configuration()
 
 
 def _safe_log_value(value: object, limit: int = 256) -> str:
@@ -127,20 +174,66 @@ def enforce_rate_limit(request: Request) -> None:
         raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
 
-def enforce_auth(request: Request) -> None:
+def authenticate_token(token: str) -> AccessContext | None:
+    matched: AccessContext | None = None
+    for role, configured_key, credential in _credential_candidates():
+        is_match = hmac.compare_digest(token, configured_key)
+        if is_match and (matched is None or ROLE_RANK[role] > ROLE_RANK[matched.role]):
+            matched = AccessContext(role=role, credential=credential)
+    return matched
+
+
+def enforce_auth(request: Request) -> AccessContext | None:
     if request.url.path == '/api/health':
-        return
+        request.state.access = None
+        return None
     authorization = request.headers.get('authorization', '')
     scheme, separator, token = authorization.partition(' ')
-    valid = bool(
-        API_KEY
-        and separator
-        and scheme.lower() == 'bearer'
-        and hmac.compare_digest(token, API_KEY)
-    )
-    if not valid:
+    access = None
+    if separator and scheme.lower() == 'bearer':
+        access = authenticate_token(token)
+    if access is None:
         audit_log(request, 'auth', 'failed')
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
+    request.state.access = access
+    return access
+
+
+def access_context(request: Request) -> AccessContext:
+    access = getattr(request.state, 'access', None)
+    if not isinstance(access, AccessContext):
+        raise HTTPException(status_code=401, detail='Authentication required')
+    return access
+
+
+def require_access(request: Request, minimum_role: AccessRole) -> AccessContext:
+    access = access_context(request)
+    if ROLE_RANK[access.role] < ROLE_RANK[minimum_role]:
+        audit_log(
+            request,
+            'authorization',
+            'denied',
+            f'role={access.role} required={minimum_role}',
+        )
+        raise HTTPException(status_code=403, detail='Insufficient role')
+    return access
+
+
+def require_operator_access(request: Request) -> AccessContext:
+    return require_access(request, 'operator')
+
+
+def require_admin_access(request: Request) -> AccessContext:
+    return require_access(request, 'admin')
+
+
+def role_capabilities(role: AccessRole) -> list[str]:
+    capabilities = ['read:events', 'read:detections', 'read:operations']
+    if ROLE_RANK[role] >= ROLE_RANK['operator']:
+        capabilities.extend(['write:ingest', 'write:operations'])
+    if role == 'admin':
+        capabilities.extend(['read:parser-diagnostics', 'admin:configuration'])
+    return capabilities
 
 
 def reset_rate_limit_state() -> None:

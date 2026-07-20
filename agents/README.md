@@ -9,15 +9,19 @@ The Linux agent tails local log files and sends new lines to the backend `/api/i
 Start the backend first:
 
 ```bash
-export AI_SIEM_API_KEY='dev-token'
+export AI_SIEM_OPERATOR_KEY='operator-token'
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Keep the key in the environment rather than a command-line argument:
 
 ```bash
-export AI_SIEM_API_KEY='dev-token'
+export AI_SIEM_AGENT_KEY='operator-token'
 ```
+
+The agent checks `AI_SIEM_AGENT_KEY` first, then the Operator and legacy keys.
+Use an Operator credential for ingestion instead of giving a collector Admin
+access.
 
 Run the agent against real Linux authentication logs:
 

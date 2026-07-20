@@ -2,6 +2,8 @@ const defaultApi = window.location.origin;
 let API = sessionStorage.getItem('AI_SIEM_API') || defaultApi;
 let connected = false;
 let state = {
+  session: { role: 'viewer', capabilities: [] },
+  operations: {},
   metrics: {},
   events: [],
   alerts: [],
@@ -11,6 +13,8 @@ let state = {
 };
 
 const fallback = {
+  session: { role: 'viewer', capabilities: [] },
+  operations: {},
   metrics: {
     total_events: 0,
     critical_alerts: 0,
@@ -50,6 +54,10 @@ function authHeaders(extra = {}) {
   return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
 }
 
+function canOperate() {
+  return (state.session.capabilities || []).includes('write:operations');
+}
+
 function badge(value) {
   const normalized = String(value || '').toLowerCase();
   const cssClass = normalized.includes('critical') || normalized === 'p1'
@@ -83,15 +91,21 @@ function normalizeApiUrl(value) {
   return parsed.origin;
 }
 
-async function api(path) {
+async function requestJson(path, options = {}) {
   const response = await fetch(API + path, {
     cache: 'no-store',
-    headers: authHeaders(),
+    ...options,
+    headers: authHeaders(options.headers || {}),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`${path} returned ${response.status}`);
+    throw new Error(body.detail || `${path} returned ${response.status}`);
   }
-  return response.json();
+  return body;
+}
+
+async function api(path) {
+  return requestJson(path);
 }
 
 function showConnectionDialog(message = '') {
@@ -149,15 +163,26 @@ async function load() {
     return false;
   }
   try {
-    const [events, alerts, incidents, anomalies, metrics, rules] = await Promise.all([
+    const [session, events, alerts, incidents, anomalies, metrics, rules, operations] = await Promise.all([
+      api('/api/session'),
       api('/api/events'),
       api('/api/alerts'),
       api('/api/incidents'),
       api('/api/anomalies'),
       api('/api/metrics'),
       api('/api/rules'),
+      api('/api/operations/summary'),
     ]);
-    state = { events, alerts, incidents, anomalies, metrics, rules };
+    state = {
+      session,
+      events,
+      alerts,
+      incidents,
+      anomalies,
+      metrics,
+      rules,
+      operations,
+    };
     connected = true;
     $('#backend-status').textContent = 'Backend connected';
     $('#backend-status').classList.remove('offline');
@@ -184,30 +209,16 @@ function render() {
   $('#metric-incidents').textContent = state.metrics.open_incidents || 0;
   $('#metric-risk').textContent = `${state.metrics.risk_score || 0}/100`;
   $('#open-alerts').textContent = state.alerts.length;
+  $('#session-role').textContent = String(state.session.role || 'viewer').toUpperCase();
+  $('#metric-unassigned').textContent = state.operations.unassigned_alerts || 0;
+  $('#metric-sla').textContent = (
+    Number(state.operations.breached_alert_slas || 0)
+    + Number(state.operations.breached_incident_slas || 0)
+  );
+  $('#run-analysis').disabled = !canOperate();
 
-  $('#alerts-body').innerHTML = state.alerts.map((alert) => `
-    <tr>
-      <td>${escapeHtml(alert.alert_id)}</td>
-      <td>${escapeHtml(alert.title)}<br><small>${escapeHtml(alert.rule_id)}</small></td>
-      <td>${badge(alert.severity)}</td>
-      <td>${Math.round((Number(alert.confidence) || 0) * 100)}%</td>
-      <td>${escapeHtml(alert.tactic)}</td>
-      <td>${escapeHtml(alert.technique)}</td>
-      <td>${escapeHtml(alert.asset)}</td>
-      <td>${escapeHtml(alert.user || alert.src_ip)}</td>
-    </tr>
-  `).join('');
-
-  $('#incidents-list').innerHTML = state.incidents.map((incident) => `
-    <div class="incident">
-      <strong>${escapeHtml(incident.incident_id)}</strong>
-      <span>${escapeHtml(incident.title)}</span>
-      ${badge(incident.priority)}
-      <em>${escapeHtml(incident.status)}</em>
-      <small>${(incident.related_alert_ids || []).length} alerts · ${(incident.timeline || []).length} timeline events</small>
-      <small>${(incident.related_alert_ids || []).map((id) => escapeHtml(id)).join(', ')}</small>
-    </div>
-  `).join('');
+  renderAlerts();
+  renderIncidents();
 
   $('#anomalies-list').innerHTML = state.anomalies.map((anomaly) => {
     const features = Object.entries(anomaly.contributing_features || {})
@@ -241,6 +252,64 @@ function render() {
   renderMitre();
   renderNarrative();
   renderActivity();
+}
+
+function renderAlerts() {
+  const severity = $('#alert-severity').value;
+  const status = $('#alert-status').value;
+  const search = $('#alert-search').value.trim().toLowerCase();
+  const alerts = state.alerts.filter((alert) => {
+    const searchable = [
+      alert.alert_id,
+      alert.title,
+      alert.rule_id,
+      alert.asset,
+      alert.user,
+      alert.src_ip,
+      alert.assigned_to,
+    ].join(' ').toLowerCase();
+    return (severity === 'all' || alert.severity === severity)
+      && (status === 'all' || alert.status === status)
+      && (!search || searchable.includes(search));
+  });
+
+  $('#alerts-body').innerHTML = alerts.map((alert) => `
+    <tr>
+      <td>${escapeHtml(alert.alert_id)}</td>
+      <td>${escapeHtml(alert.title)}<br><small>${escapeHtml(alert.rule_id)}</small></td>
+      <td>${badge(alert.severity)}</td>
+      <td>${Math.round((Number(alert.confidence) || 0) * 100)}%</td>
+      <td>${escapeHtml(alert.tactic)}</td>
+      <td>${escapeHtml(alert.technique)}</td>
+      <td>${escapeHtml(alert.asset)}</td>
+      <td>${escapeHtml(alert.user || alert.src_ip)}</td>
+      <td>${badge(alert.status)}</td>
+      <td>${escapeHtml(alert.assigned_to)}</td>
+      <td class="${alert.sla_breached ? 'sla-breached' : ''}">${alert.sla_breached ? 'Breached' : 'On time'}</td>
+      <td><button class="btn table-action" data-operation-type="alert" data-operation-id="${escapeHtml(alert.alert_id)}" data-operation-status="${escapeHtml(alert.status)}" data-operation-assignee="${escapeHtml(alert.assigned_to)}" ${canOperate() ? '' : 'disabled'}>Manage</button></td>
+    </tr>
+  `).join('');
+  $('#alert-result-count').textContent = `${alerts.length} results`;
+}
+
+function renderIncidents() {
+  const status = $('#incident-status').value;
+  const incidents = state.incidents.filter(
+    (incident) => status === 'all' || incident.status === status,
+  );
+  $('#incidents-list').innerHTML = incidents.map((incident) => `
+    <div class="incident">
+      <strong>${escapeHtml(incident.incident_id)}</strong>
+      <span>${escapeHtml(incident.title)}</span>
+      ${badge(incident.priority)}
+      <em>${escapeHtml(incident.status)}</em>
+      <small>${(incident.related_alert_ids || []).length} alerts · ${(incident.timeline || []).length} timeline events</small>
+      <small>${(incident.related_alert_ids || []).map((id) => escapeHtml(id)).join(', ')}</small>
+      <small>Owner: ${escapeHtml(incident.assigned_to || incident.owner)}</small>
+      <small class="${incident.sla_breached ? 'sla-breached' : ''}">SLA: ${incident.sla_breached ? 'Breached' : 'On time'}</small>
+      <button class="btn table-action" data-operation-type="incident" data-operation-id="${escapeHtml(incident.incident_id)}" data-operation-status="${escapeHtml(incident.status)}" data-operation-assignee="${escapeHtml(incident.assigned_to || incident.owner)}" ${canOperate() ? '' : 'disabled'}>Manage case</button>
+    </div>
+  `).join('');
 }
 
 function renderDistribution(selector, data) {
@@ -309,6 +378,9 @@ function renderActivity() {
 }
 
 async function runAnalysis() {
+  if (!canOperate()) {
+    return;
+  }
   const top = [...state.alerts]
     .sort((first, second) => (second.confidence || 0) - (first.confidence || 0))[0];
   if (!top) {
@@ -348,6 +420,74 @@ async function runAnalysis() {
   switchView('analysis');
 }
 
+let operationTarget = null;
+const operationStatuses = {
+  alert: ['open', 'acknowledged', 'investigating', 'resolved', 'false_positive'],
+  incident: ['open', 'investigating', 'contained', 'resolved', 'closed'],
+};
+
+function openOperationEditor(button) {
+  if (!canOperate()) {
+    return;
+  }
+  const type = button.dataset.operationType;
+  const id = button.dataset.operationId;
+  if (!operationStatuses[type] || !id) {
+    return;
+  }
+  operationTarget = { type, id };
+  const source = type === 'alert'
+    ? state.alerts.find((item) => item.alert_id === id)
+    : state.incidents.find((item) => item.incident_id === id);
+  $('#operation-title').textContent = `${type === 'alert' ? 'Manage alert' : 'Manage incident'} · ${id}`;
+  $('#operation-status').innerHTML = operationStatuses[type]
+    .map((status) => `<option value="${status}">${status.replace('_', ' ')}</option>`)
+    .join('');
+  $('#operation-status').value = source?.status || button.dataset.operationStatus;
+  $('#operation-assignee').value = source?.assigned_to || button.dataset.operationAssignee || '';
+  $('#operation-note').value = source?.resolution_note || '';
+  $('#operation-error').textContent = '';
+  $('#operation-dialog').hidden = false;
+  $('#operation-assignee').focus();
+}
+
+function closeOperationEditor() {
+  operationTarget = null;
+  $('#operation-error').textContent = '';
+  $('#operation-dialog').hidden = true;
+}
+
+async function saveOperation(event) {
+  event.preventDefault();
+  if (!operationTarget || !canOperate()) {
+    return;
+  }
+  const button = $('#operation-save');
+  const error = $('#operation-error');
+  button.disabled = true;
+  error.textContent = '';
+  try {
+    const path = operationTarget.type === 'alert'
+      ? `/api/alerts/${encodeURIComponent(operationTarget.id)}`
+      : `/api/incidents/${encodeURIComponent(operationTarget.id)}`;
+    await requestJson(path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: $('#operation-status').value,
+        assigned_to: $('#operation-assignee').value.trim() || 'unassigned',
+        resolution_note: $('#operation-note').value.trim(),
+      }),
+    });
+    closeOperationEditor();
+    await load();
+  } catch (operationError) {
+    error.textContent = operationError.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function switchView(id) {
   const button = [...$$('nav button')].find((item) => item.dataset.view === id);
   const view = document.getElementById(id);
@@ -372,6 +512,19 @@ $('#connection-form').onsubmit = (event) => {
   event.preventDefault();
   connect();
 };
+$('#alert-severity').onchange = renderAlerts;
+$('#alert-status').onchange = renderAlerts;
+$('#alert-search').oninput = renderAlerts;
+$('#incident-status').onchange = renderIncidents;
+$('#operation-form').onsubmit = saveOperation;
+$('#operation-cancel').onclick = closeOperationEditor;
+document.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest('[data-operation-type]');
+  if (button) {
+    openOperationEditor(button);
+  }
+});
 
 setInterval(() => {
   $('#clock').textContent = new Date().toLocaleTimeString();

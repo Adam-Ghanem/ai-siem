@@ -124,6 +124,7 @@ class ApiTests(unittest.TestCase):
                 'alert_id': active_alerts[0]['alert_id'],
                 'action': 'false_positive',
                 'analyst': 'adam',
+                'note': 'Known authorized test activity',
             },
         )
         self.assertEqual(t.status_code, 200)

@@ -81,6 +81,26 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         compare.assert_called_with('test-token', 'test-token')
 
+    def test_at_least_one_unique_role_key_is_required(self):
+        with patch.multiple(
+            security,
+            API_KEY='',
+            ADMIN_API_KEY='',
+            OPERATOR_API_KEY='',
+            VIEWER_API_KEY='',
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'Configure'):
+                security._validate_credential_configuration()
+        with patch.multiple(
+            security,
+            API_KEY='',
+            ADMIN_API_KEY='shared-secret',
+            OPERATOR_API_KEY='shared-secret',
+            VIEWER_API_KEY='',
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'must be unique'):
+                security._validate_credential_configuration()
+
     def test_untrusted_forwarded_header_cannot_bypass_rate_limit(self):
         original_limit = security.GLOBAL_RATE_LIMIT_PER_MINUTE
         original_trust = security.TRUST_PROXY_HEADERS

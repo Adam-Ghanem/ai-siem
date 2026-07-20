@@ -14,8 +14,8 @@ else
   exit 1
 fi
 
-if [[ -z "${AI_SIEM_API_KEY:-}" ]]; then
-  echo "[AI-SIEM] Set AI_SIEM_API_KEY before starting."
+if [[ -z "${AI_SIEM_API_KEY:-}" && -z "${AI_SIEM_ADMIN_KEY:-}" && -z "${AI_SIEM_OPERATOR_KEY:-}" && -z "${AI_SIEM_VIEWER_KEY:-}" ]]; then
+  echo "[AI-SIEM] Configure at least one API key before starting."
   exit 1
 fi
 

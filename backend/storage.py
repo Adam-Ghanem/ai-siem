@@ -38,6 +38,51 @@ CREATE TABLE IF NOT EXISTS triage_records (
 );
 CREATE INDEX IF NOT EXISTS idx_triage_alert ON triage_records(alert_id);
 CREATE INDEX IF NOT EXISTS idx_triage_created ON triage_records(created_at);
+CREATE TABLE IF NOT EXISTS alert_operations (
+    alert_id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL,
+    assigned_to TEXT NOT NULL,
+    resolution_note TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    occurrence_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_operations_status
+ON alert_operations(status, severity);
+CREATE INDEX IF NOT EXISTS idx_alert_operations_due
+ON alert_operations(due_at);
+CREATE TABLE IF NOT EXISTS incident_operations (
+    incident_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    status TEXT NOT NULL,
+    assigned_to TEXT NOT NULL,
+    resolution_note TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incident_operations_status
+ON incident_operations(status, priority);
+CREATE INDEX IF NOT EXISTS idx_incident_operations_due
+ON incident_operations(due_at);
+CREATE TABLE IF NOT EXISTS operation_history (
+    history_id TEXT PRIMARY KEY,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operation_history_object
+ON operation_history(object_type, object_id, created_at);
 '''
 
 
@@ -184,6 +229,12 @@ def stats(path: str | Path | None = None) -> dict:
     with connect(path) as conn:
         total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
         triage_total = conn.execute('SELECT COUNT(*) FROM triage_records').fetchone()[0]
+        alert_operations = conn.execute(
+            'SELECT COUNT(*) FROM alert_operations'
+        ).fetchone()[0]
+        incident_operations = conn.execute(
+            'SELECT COUNT(*) FROM incident_operations'
+        ).fetchone()[0]
         sources = {
             row['source']: row['count']
             for row in conn.execute(
@@ -198,6 +249,8 @@ def stats(path: str | Path | None = None) -> dict:
         'db_path': str(_db_path(path)),
         'stored_events': total,
         'triage_records': triage_total,
+        'alert_operations': alert_operations,
+        'incident_operations': incident_operations,
         'source_distribution': sources,
         'last_event_timestamp': last['timestamp'] if last else None,
     }

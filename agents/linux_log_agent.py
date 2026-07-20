@@ -141,8 +141,15 @@ def main() -> int:
     )
     parser.add_argument(
         '--token',
-        default=os.getenv('AI_SIEM_API_KEY', ''),
-        help='AI-SIEM API key; prefer the AI_SIEM_API_KEY environment variable',
+        default=(
+            os.getenv('AI_SIEM_AGENT_KEY', '')
+            or os.getenv('AI_SIEM_OPERATOR_KEY', '')
+            or os.getenv('AI_SIEM_API_KEY', '')
+        ),
+        help=(
+            'Ingest key; prefer AI_SIEM_AGENT_KEY or AI_SIEM_OPERATOR_KEY '
+            'in the environment'
+        ),
     )
     parser.add_argument(
         '--file',
@@ -172,7 +179,7 @@ def main() -> int:
         parser.error(str(exc))
     token = args.token.strip()
     if not token:
-        parser.error('Set AI_SIEM_API_KEY or provide --token')
+        parser.error('Set AI_SIEM_AGENT_KEY/AI_SIEM_OPERATOR_KEY or provide --token')
     if not 0.1 <= args.interval <= 3600:
         parser.error('--interval must be between 0.1 and 3600 seconds')
     if not 1 <= args.batch_size <= 100:

@@ -31,6 +31,7 @@
       <header class="topbar">
         <div><span class="label">Security Operations Command Center</span><h1 id="view-title">Dashboard</h1></div>
         <div class="actions">
+          <span class="role-badge" id="session-role">VIEWER</span>
           <div class="clock" id="clock">--:--:--</div>
           <button id="connection-settings" class="btn ghost">Connection</button>
           <button id="disconnect" class="btn ghost">Disconnect</button>
@@ -51,6 +52,8 @@
           <div class="kpi"><span>Critical Alerts</span><strong id="metric-critical">--</strong><em>Highest severity</em></div>
           <div class="kpi"><span>Open Incidents</span><strong id="metric-incidents">--</strong><em>Correlated cases</em></div>
           <div class="kpi"><span>Risk Score</span><strong id="metric-risk">--</strong><em>Explainable score</em></div>
+          <div class="kpi"><span>Unassigned Alerts</span><strong id="metric-unassigned">--</strong><em>Needs ownership</em></div>
+          <div class="kpi"><span>SLA Breaches</span><strong id="metric-sla">--</strong><em>Needs escalation</em></div>
         </div>
         <div class="grid">
           <article class="panel wide"><h3>Alert Activity</h3><p>Detection volume by refresh window.</p><div class="bars" id="bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></article>
@@ -60,8 +63,8 @@
         </div>
       </section>
 
-      <section id="alerts" class="view"><article class="panel full"><h3>Alert Queue</h3><p>Prioritized detections from real rule logic.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Alert / Rule</th><th>Severity</th><th>Confidence</th><th>Tactic</th><th>Technique</th><th>Asset</th><th>Entity</th></tr></thead><tbody id="alerts-body"></tbody></table></div></article></section>
-      <section id="incidents" class="view"><article class="panel full"><h3>Incident Lifecycle</h3><p>Correlated investigations with related alert IDs and timelines.</p><div id="incidents-list"></div></article></section>
+      <section id="alerts" class="view"><article class="panel full"><h3>Alert Queue</h3><p>Prioritized detections with ownership, status, and SLA tracking.</p><div class="filter-bar"><input id="alert-search" type="search" placeholder="Search alerts, assets, users..." /><select id="alert-severity"><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><select id="alert-status"><option value="all">All statuses</option><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="investigating">Investigating</option><option value="resolved">Resolved</option><option value="false_positive">False positive</option></select><span id="alert-result-count">0 results</span></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Alert / Rule</th><th>Severity</th><th>Confidence</th><th>Tactic</th><th>Technique</th><th>Asset</th><th>Entity</th><th>Status</th><th>Owner</th><th>SLA</th><th>Action</th></tr></thead><tbody id="alerts-body"></tbody></table></div></article></section>
+      <section id="incidents" class="view"><article class="panel full"><h3>Incident Lifecycle</h3><p>Correlated investigations with ownership, SLA, and controlled state transitions.</p><div class="filter-bar"><select id="incident-status"><option value="all">All statuses</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="contained">Contained</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select></div><div id="incidents-list"></div></article></section>
       <section id="anomalies" class="view"><article class="panel full"><h3>Anomaly Review</h3><p>Explainable statistical anomalies with contributing features.</p><div id="anomalies-list"></div></article></section>
       <section id="analysis" class="view"><div class="stack"><article class="panel full"><h3>Live Analysis</h3><p>Automated triage marker for the highest-confidence alert.</p><div class="analysis-box" id="analysis-box"><strong>Waiting for analysis...</strong><span>Click Run Live Analysis.</span></div></article><article class="panel full"><h3>Recommended Response</h3><div id="response-list"></div></article></div></section>
       <section id="detections" class="view"><article class="panel full"><h3>Detection Engineering Rules</h3><p>Rules mapped to MITRE ATT&CK.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Rule</th><th>Severity</th><th>Tactic</th><th>Technique</th></tr></thead><tbody id="detections-body"></tbody></table></div></article></section>
@@ -82,6 +85,20 @@
       <p class="connection-error" id="connection-error" role="alert"></p>
       <button class="btn primary" id="connect-submit" type="submit">Connect securely</button>
       <small>Remote connections require HTTPS. Localhost may use HTTP for development.</small>
+    </form>
+  </div>
+  <div class="auth-gate" id="operation-dialog" hidden>
+    <form class="auth-card" id="operation-form">
+      <span class="eyebrow">SOC OPERATIONS</span>
+      <h2 id="operation-title">Manage detection</h2>
+      <label for="operation-status">Status</label>
+      <select id="operation-status" required></select>
+      <label for="operation-assignee">Assigned to</label>
+      <input id="operation-assignee" maxlength="80" autocomplete="off" placeholder="Analyst or team" />
+      <label for="operation-note">Resolution / investigation note</label>
+      <textarea id="operation-note" maxlength="2000" rows="5" placeholder="Add evidence-backed context. A note is required to close an item."></textarea>
+      <p class="connection-error" id="operation-error" role="alert"></p>
+      <div class="dialog-actions"><button class="btn ghost" id="operation-cancel" type="button">Cancel</button><button class="btn primary" id="operation-save" type="submit">Save operation</button></div>
     </form>
   </div>
   <script src="./app.js"></script>
