@@ -2,6 +2,8 @@ name: AI-SIEM CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   tests-and-security:
     runs-on: ubuntu-latest
@@ -13,18 +15,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
       - name: Compile Python modules
-        run: python -m compileall backend tests
+        run: python -m compileall backend tests agents healthcheck.py
       - name: Run unit tests
         run: python -m unittest discover tests -v
         env:
           AI_SIEM_API_KEY: test-token
           AI_SIEM_RATE_LIMIT_PER_MINUTE: 1000
           AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: 1000
-      - name: Install security scanners
-        run: pip install bandit pip-audit
+          AI_SIEM_DB_PATH: /tmp/ai-siem-ci.db
+          AI_SIEM_AUDIT_LOG: /tmp/ai-siem-ci-audit.log
+      - name: Check Python names
+        run: flake8 --select=F backend agents tests healthcheck.py
+      - name: Type-check critical paths
+        run: >-
+          mypy --ignore-missing-imports
+          backend/main.py backend/security.py backend/storage.py
+          backend/operations.py backend/notifications.py
+          backend/reports.py backend/hunting.py
+          backend/detection.py backend/parser.py backend/anomaly.py
+          agents/linux_log_agent.py
+      - name: Validate JavaScript and shell syntax
+        run: |
+          node --check frontend/app.js
+          bash -n start.sh
       - name: Bandit high severity scan
-        run: bandit -q -r backend -lll
+        run: bandit -q -r backend agents healthcheck.py -lll
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.txt

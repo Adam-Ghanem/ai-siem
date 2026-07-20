@@ -2,29 +2,60 @@ services:
   backend:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       AI_SIEM_HOST: 0.0.0.0
       AI_SIEM_PORT: 8000
       AI_SIEM_ALLOWED_ORIGIN: http://localhost:5173
-      AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:-dev-token}
+      AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:-}
+      AI_SIEM_ADMIN_KEY: ${AI_SIEM_ADMIN_KEY:-}
+      AI_SIEM_OPERATOR_KEY: ${AI_SIEM_OPERATOR_KEY:-}
+      AI_SIEM_VIEWER_KEY: ${AI_SIEM_VIEWER_KEY:-}
+      AI_SIEM_WEBHOOK_URL: ${AI_SIEM_WEBHOOK_URL:-}
+      AI_SIEM_SLACK_WEBHOOK_URL: ${AI_SIEM_SLACK_WEBHOOK_URL:-}
+      AI_SIEM_NOTIFY_INCLUDE_RAW_TARGETS: ${AI_SIEM_NOTIFY_INCLUDE_RAW_TARGETS:-false}
+      AI_SIEM_NOTIFY_DEBOUNCE_SECONDS: ${AI_SIEM_NOTIFY_DEBOUNCE_SECONDS:-900}
+      AI_SIEM_NOTIFY_MIN_SEVERITY: ${AI_SIEM_NOTIFY_MIN_SEVERITY:-High}
+      AI_SIEM_NOTIFY_CIRCUIT_FAILURES: ${AI_SIEM_NOTIFY_CIRCUIT_FAILURES:-5}
+      AI_SIEM_NOTIFY_CIRCUIT_RESET_SECONDS: ${AI_SIEM_NOTIFY_CIRCUIT_RESET_SECONDS:-300}
+      AI_SIEM_NOTIFY_QUEUE_SIZE: ${AI_SIEM_NOTIFY_QUEUE_SIZE:-500}
+      AI_SIEM_MAX_EXPORT_ROWS: ${AI_SIEM_MAX_EXPORT_ROWS:-2000}
+      AI_SIEM_MAX_HUNT_SCAN_EVENTS: ${AI_SIEM_MAX_HUNT_SCAN_EVENTS:-25000}
+      AI_SIEM_MAX_CONCURRENT_HUNTS: ${AI_SIEM_MAX_CONCURRENT_HUNTS:-2}
       AI_SIEM_STORAGE: sqlite
       AI_SIEM_DB_PATH: /app/data/ai_siem.db
       AI_SIEM_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_RATE_LIMIT_PER_MINUTE:-60}
       AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE:-10}
+      AI_SIEM_TRUST_PROXY_HEADERS: "false"
     volumes:
       - ai_siem_data:/app/data
       - ai_siem_logs:/app/logs
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
   frontend:
-    image: node:22-alpine
-    working_dir: /ui
+    image: nginx:1.27-alpine
     volumes:
-      - ./frontend:/ui
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_URL: http://localhost:8000
+      - "127.0.0.1:5173:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
 volumes:
   ai_siem_data:

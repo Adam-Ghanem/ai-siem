@@ -1,0 +1,94 @@
+# Security Policy
+
+AI-SIEM is a defensive engineering project. Run it only with telemetry,
+systems, and networks you are authorized to monitor.
+
+## Reporting a vulnerability
+
+Do not include credentials, webhook URLs, production logs, or customer data in
+a public issue. Prefer GitHub private vulnerability reporting when it is
+available for this repository. Otherwise, contact the repository owner with a
+minimal, redacted reproduction.
+
+## Security posture
+
+- All API routes except the health check require a configured Bearer key.
+- Admin, Operator, and Viewer keys are compared in constant time and must be
+  unique across roles.
+- Request sizes, ingestion batches, list responses, and in-memory state are
+  bounded.
+- Proxy headers are ignored unless the deployment explicitly trusts its reverse
+  proxy.
+- Audit records are sanitized and never include authorization headers.
+- The dashboard stores its key only in the current browser tab and permits
+  plaintext HTTP only for localhost development.
+
+## Notifications
+
+Outbound notifications are disabled by default and activate only when
+`AI_SIEM_WEBHOOK_URL` or `AI_SIEM_SLACK_WEBHOOK_URL` is explicitly configured.
+
+- Destinations must be absolute HTTPS URLs without embedded credentials,
+  queries, or fragments.
+- Redirects are never followed.
+- Requests use a five-second timeout, bounded payloads and responses, three
+  exponential-backoff retries, and a circuit breaker.
+- A bounded background queue keeps webhook latency and failures out of the
+  detection and alert-persistence path.
+- Alert targets, IP addresses, hostnames, users, and raw evidence are excluded
+  by default. Raw target inclusion requires the explicit
+  `AI_SIEM_NOTIFY_INCLUDE_RAW_TARGETS=true` opt-in.
+- Destination URLs are treated as secrets. They are never logged or returned
+  by the API; status responses expose only channel kind and enabled state.
+- Duplicate alert notifications are debounced, and an SLA breach transition is
+  recorded once in operational history.
+
+Rotate a webhook immediately if it is exposed. Use a secrets manager or
+deployment secret rather than committing it to the repository.
+
+## Reports and evidence export
+
+Report summaries contain aggregate counts only. Evidence export is restricted
+to Operators and Admins, bounded by `AI_SIEM_MAX_EXPORT_ROWS`, and excludes raw
+events and raw evidence.
+
+- Target IPs, hostnames, and users are de-identified by default.
+- Raw-target inclusion requires an explicit query option and Admin access.
+- CSV cells beginning with spreadsheet formula characters are escaped before
+  download.
+- Export audit records include only safe metadata such as format, row count,
+  and whether raw-target mode was requested.
+- Admin readiness responses return role names and component health only. They
+  never return keys, notification URLs, authorization headers, or exception
+  details.
+
+Treat raw-target exports as sensitive operational data. Store and transmit them
+only through organization-approved systems.
+
+## Threat hunting
+
+Threat hunts use a structured `POST` body so investigation terms do not appear
+in ordinary access URLs. The query engine supports literal matching and
+allowlisted exact fields only; it does not evaluate regular expressions, SQL,
+shell syntax, scripts, or a custom expression language.
+
+- Request size is covered by the global bounded-body reader.
+- Field lengths, timestamps, offsets, result counts, and total scanned events
+  are validated and capped.
+- Hunts inspect the most recent bounded active working set and disclose when
+  that scope was truncated.
+- Viewer responses and literal search exclude `raw_log`. Raw-log matching and
+  previews require Operator or Admin access, are explicitly requested, and are
+  truncated before serialization. The same safe representation is used by the
+  event-list and hunt endpoints.
+- Hunt evaluation runs outside the async request loop behind a bounded,
+  configurable concurrency gate. Saturated deployments fail excess hunts fast
+  with `429` and `Retry-After` so routine health and analyst traffic can proceed.
+- Facets are bounded and generated only from the already matched hunt scope.
+- Audit records contain filter/result counts and raw-mode state only. Literal
+  hunt terms and entity values are not written to the audit log.
+- The dashboard escapes telemetry and facet values before rendering. Browser
+  hunt history remains in memory for the current tab and is not persisted.
+
+Threat hunting is a defensive capability. Run it only against telemetry and
+systems the organization is authorized to monitor.

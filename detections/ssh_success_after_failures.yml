@@ -1,0 +1,8 @@
+id: DET-SSH-002
+title: Successful Login After Multiple Failures
+severity: high
+tactic: Initial Access
+technique: T1078
+source: linux_auth
+logic: successful SSH authentication follows repeated failures for the same source and user within ten minutes
+recommendation: Validate the session, review commands, rotate credentials, and contain the account if unauthorized.

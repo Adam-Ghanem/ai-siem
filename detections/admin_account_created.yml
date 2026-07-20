@@ -1,8 +1,8 @@
-id: DET-004
+id: DET-WIN-001
 title: Admin Account Created
-severity: high
+severity: critical
 tactic: Persistence
 technique: T1136
-source: identity
+source: windows
 logic: privileged account created outside normal administration window
 recommendation: Disable account until validated, review creator identity, audit privileged groups.

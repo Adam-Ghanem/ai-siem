@@ -1,4 +1,4 @@
-id: DET-005
+id: DET-WAF-001
 title: SQL Injection Attempt
 severity: high
 tactic: Initial Access

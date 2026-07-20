@@ -1,39 +1,146 @@
 from __future__ import annotations
 
+import hmac
 import os
+import re
+import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
+from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Deque
+from typing import Deque, Literal
 
 from fastapi import HTTPException, Request
 
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f'{name} must be an integer') from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f'{name} must be between {minimum} and {maximum}')
+    return value
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    raise RuntimeError(f'{name} must be a boolean')
+
+
 API_KEY = os.getenv('AI_SIEM_API_KEY', '').strip()
-GLOBAL_RATE_LIMIT_PER_MINUTE = int(os.getenv('AI_SIEM_RATE_LIMIT_PER_MINUTE', '60'))
-INGEST_RATE_LIMIT_PER_MINUTE = int(os.getenv('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '10'))
-MAX_EVENTS_PER_INGEST = int(os.getenv('AI_SIEM_MAX_EVENTS_PER_INGEST', '100'))
-MAX_RAW_LOG_BYTES = int(os.getenv('AI_SIEM_MAX_RAW_LOG_BYTES', str(10 * 1024)))
-MAX_IN_MEMORY_EVENTS = int(os.getenv('AI_SIEM_MAX_IN_MEMORY_EVENTS', '10000'))
+ADMIN_API_KEY = os.getenv('AI_SIEM_ADMIN_KEY', '').strip()
+OPERATOR_API_KEY = os.getenv('AI_SIEM_OPERATOR_KEY', '').strip()
+VIEWER_API_KEY = os.getenv('AI_SIEM_VIEWER_KEY', '').strip()
+GLOBAL_RATE_LIMIT_PER_MINUTE = _bounded_int(
+    'AI_SIEM_RATE_LIMIT_PER_MINUTE', 60, 1, 100_000
+)
+INGEST_RATE_LIMIT_PER_MINUTE = _bounded_int(
+    'AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', 10, 1, 100_000
+)
+MAX_EVENTS_PER_INGEST = _bounded_int('AI_SIEM_MAX_EVENTS_PER_INGEST', 100, 1, 10_000)
+MAX_RAW_LOG_BYTES = _bounded_int(
+    'AI_SIEM_MAX_RAW_LOG_BYTES', 10 * 1024, 256, 1024 * 1024
+)
+MAX_REQUEST_BYTES = _bounded_int(
+    'AI_SIEM_MAX_REQUEST_BYTES', 1024 * 1024, 1024, 16 * 1024 * 1024
+)
+MAX_IN_MEMORY_EVENTS = _bounded_int(
+    'AI_SIEM_MAX_IN_MEMORY_EVENTS', 10_000, 100, 1_000_000
+)
+TRUST_PROXY_HEADERS = _env_bool('AI_SIEM_TRUST_PROXY_HEADERS', False)
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 
-_GLOBAL_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
-_INGEST_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
+_GLOBAL_BUCKETS: dict[str, Deque[float]] = {}
+_INGEST_BUCKETS: dict[str, Deque[float]] = {}
+_RATE_LIMIT_LOCK = threading.Lock()
+_CONTROL_CHARACTERS = re.compile(r'[\x00-\x1f\x7f]+')
+
+AccessRole = Literal['admin', 'operator', 'viewer']
+ROLE_RANK: dict[AccessRole, int] = {'viewer': 1, 'operator': 2, 'admin': 3}
+
+
+@dataclass(frozen=True)
+class AccessContext:
+    role: AccessRole
+    credential: str
+
+
+def _credential_candidates() -> list[tuple[AccessRole, str, str]]:
+    candidates: list[tuple[AccessRole, str, str]] = [
+        ('admin', ADMIN_API_KEY, 'admin-key'),
+        ('admin', API_KEY, 'legacy-admin-key'),
+        ('operator', OPERATOR_API_KEY, 'operator-key'),
+        ('viewer', VIEWER_API_KEY, 'viewer-key'),
+    ]
+    unique: list[tuple[AccessRole, str, str]] = []
+    seen: set[tuple[AccessRole, str]] = set()
+    for role, key, name in candidates:
+        if key and (role, key) not in seen:
+            unique.append((role, key, name))
+            seen.add((role, key))
+    return unique
+
+
+def _validate_credential_configuration() -> None:
+    candidates = _credential_candidates()
+    if not candidates:
+        raise RuntimeError(
+            'Configure AI_SIEM_ADMIN_KEY, AI_SIEM_OPERATOR_KEY, '
+            'AI_SIEM_VIEWER_KEY, or the legacy AI_SIEM_API_KEY'
+        )
+    role_by_key: dict[str, AccessRole] = {}
+    for role, key, _ in candidates:
+        existing = role_by_key.get(key)
+        if existing is not None and existing != role:
+            raise RuntimeError('API keys assigned to different roles must be unique')
+        role_by_key[key] = role
+
+
+_validate_credential_configuration()
+
+
+def _safe_log_value(value: object, limit: int = 256) -> str:
+    sanitized = _CONTROL_CHARACTERS.sub(' ', str(value)).strip()
+    return sanitized[:limit]
+
+
+def _valid_ip(value: str) -> str | None:
+    try:
+        return str(ip_address(value.strip()))
+    except ValueError:
+        return None
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get('x-forwarded-for')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    return request.client.host if request.client else 'unknown'
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get('x-forwarded-for', '')
+        candidate = _valid_ip(forwarded.split(',')[0]) if forwarded else None
+        if candidate:
+            return candidate
+    peer = request.client.host if request.client else 'unknown'
+    return _safe_log_value(peer, 64) or 'unknown'
 
 
 def audit_log(request: Request, action: str, result: str, detail: str = '') -> None:
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    detail_text = f' detail={detail}' if detail else ''
+    safe_detail = _safe_log_value(detail, 512)
+    detail_text = f' detail={safe_detail}' if safe_detail else ''
     line = (
         f"timestamp={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-        f"client_ip={client_ip(request)} endpoint={request.url.path} "
-        f"action={action} result={result}{detail_text}\n"
+        f"client_ip={client_ip(request)} "
+        f"endpoint={_safe_log_value(request.url.path)} "
+        f"action={_safe_log_value(action, 64)} "
+        f"result={_safe_log_value(result, 64)}{detail_text}\n"
     )
     with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
         handle.write(line)
@@ -41,7 +148,7 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
 
 def _check_bucket(bucket: dict[str, Deque[float]], key: str, limit: int) -> bool:
     now = time.time()
-    values = bucket[key]
+    values = bucket.setdefault(key, deque())
     while values and values[0] < now - 60:
         values.popleft()
     if len(values) >= limit:
@@ -52,23 +159,97 @@ def _check_bucket(bucket: dict[str, Deque[float]], key: str, limit: int) -> bool
 
 def enforce_rate_limit(request: Request) -> None:
     ip = client_ip(request)
-    if not _check_bucket(_GLOBAL_BUCKETS, ip, GLOBAL_RATE_LIMIT_PER_MINUTE):
+    with _RATE_LIMIT_LOCK:
+        global_allowed = _check_bucket(
+            _GLOBAL_BUCKETS, ip, GLOBAL_RATE_LIMIT_PER_MINUTE
+        )
+        ingest_allowed = request.url.path != '/api/ingest' or _check_bucket(
+            _INGEST_BUCKETS, ip, INGEST_RATE_LIMIT_PER_MINUTE
+        )
+    if not global_allowed:
         audit_log(request, 'rate_limit', 'global_exceeded')
         raise HTTPException(status_code=429, detail='Global rate limit exceeded')
-    if request.url.path == '/api/ingest' and not _check_bucket(_INGEST_BUCKETS, ip, INGEST_RATE_LIMIT_PER_MINUTE):
+    if not ingest_allowed:
         audit_log(request, 'rate_limit', 'ingest_exceeded')
         raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
 
-def enforce_auth(request: Request) -> None:
+def authenticate_token(token: str) -> AccessContext | None:
+    matched: AccessContext | None = None
+    for role, configured_key, credential in _credential_candidates():
+        is_match = hmac.compare_digest(token, configured_key)
+        if is_match and (matched is None or ROLE_RANK[role] > ROLE_RANK[matched.role]):
+            matched = AccessContext(role=role, credential=credential)
+    return matched
+
+
+def enforce_auth(request: Request) -> AccessContext | None:
     if request.url.path == '/api/health':
-        return
-    expected = f'Bearer {API_KEY}'
-    if not API_KEY or request.headers.get('authorization', '') != expected:
+        request.state.access = None
+        return None
+    authorization = request.headers.get('authorization', '')
+    scheme, separator, token = authorization.partition(' ')
+    access = None
+    if separator and scheme.lower() == 'bearer':
+        access = authenticate_token(token)
+    if access is None:
         audit_log(request, 'auth', 'failed')
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
+    request.state.access = access
+    return access
+
+
+def access_context(request: Request) -> AccessContext:
+    access = getattr(request.state, 'access', None)
+    if not isinstance(access, AccessContext):
+        raise HTTPException(status_code=401, detail='Authentication required')
+    return access
+
+
+def require_access(request: Request, minimum_role: AccessRole) -> AccessContext:
+    access = access_context(request)
+    if ROLE_RANK[access.role] < ROLE_RANK[minimum_role]:
+        audit_log(
+            request,
+            'authorization',
+            'denied',
+            f'role={access.role} required={minimum_role}',
+        )
+        raise HTTPException(status_code=403, detail='Insufficient role')
+    return access
+
+
+def require_operator_access(request: Request) -> AccessContext:
+    return require_access(request, 'operator')
+
+
+def require_admin_access(request: Request) -> AccessContext:
+    return require_access(request, 'admin')
+
+
+def role_capabilities(role: AccessRole) -> list[str]:
+    capabilities = [
+        'read:events',
+        'read:detections',
+        'read:operations',
+        'read:hunting',
+    ]
+    if ROLE_RANK[role] >= ROLE_RANK['operator']:
+        capabilities.extend(
+            ['write:ingest', 'write:operations', 'read:raw-events']
+        )
+    if role == 'admin':
+        capabilities.extend(['read:parser-diagnostics', 'admin:configuration'])
+    return capabilities
+
+
+def configured_roles() -> list[AccessRole]:
+    """Return configured role names without exposing credential material."""
+    roles = {role for role, _, _ in _credential_candidates()}
+    return sorted(roles, key=lambda role: ROLE_RANK[role], reverse=True)
 
 
 def reset_rate_limit_state() -> None:
-    _GLOBAL_BUCKETS.clear()
-    _INGEST_BUCKETS.clear()
+    with _RATE_LIMIT_LOCK:
+        _GLOBAL_BUCKETS.clear()
+        _INGEST_BUCKETS.clear()

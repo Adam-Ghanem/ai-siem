@@ -1,4 +1,4 @@
-id: DET-001
+id: DET-SSH-001
 title: SSH Brute Force
 severity: high
 tactic: Credential Access
