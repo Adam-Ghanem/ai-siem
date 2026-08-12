@@ -2,7 +2,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from statistics import mean, pstdev
 from uuid import uuid4
-from ipaddress import ip_address
+import os
+from ipaddress import ip_address, ip_network
 from .models import Anomaly, Event
 
 MIN_BASELINE_SOURCES = 3
@@ -16,6 +17,16 @@ def _z(v, vals):
     return 0.0 if sd==0 else max(0.0,(v-mean(vals))/sd)
 
 
+TREAT_DOCUMENTATION_IPS_AS_EXTERNAL = os.getenv(
+    'AI_SIEM_TREAT_DOCUMENTATION_IPS_AS_EXTERNAL', 'true'
+).lower() == 'true'
+DOCUMENTATION_NETWORKS = (
+    ip_network('192.0.2.0/24'),
+    ip_network('198.51.100.0/24'),
+    ip_network('203.0.113.0/24'),
+)
+
+
 def _is_external_ip(value: str | None) -> bool:
     if not value:
         return False
@@ -23,14 +34,9 @@ def _is_external_ip(value: str | None) -> bool:
         ip = ip_address(value)
     except ValueError:
         return False
-    text = str(ip)
-    private_prefixes = ('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.2', '172.30.', '172.31.', 'fc', 'fd')
-    return not (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        or text.startswith(private_prefixes)
+    return ip.is_global or (
+        TREAT_DOCUMENTATION_IPS_AS_EXTERNAL
+        and any(ip in network for network in DOCUMENTATION_NETWORKS)
     )
 
 

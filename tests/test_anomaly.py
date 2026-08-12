@@ -26,6 +26,18 @@ class AnomalyTests(unittest.TestCase):
         anomalies = detect_anomalies(events)
 
         self.assertTrue(any('Rare source IP' in a.reason for a in anomalies))
+        rare = next(a for a in anomalies if 'Rare source IP' in a.reason)
+        self.assertEqual(rare.contributing_features['src_ip'], '198.51.100.10')
+
+    def test_rfc5737_documentation_ip_is_external_for_demo_detection(self):
+        events = [
+            event(1, status='success', user='adam', src_ip='10.0.0.1'),
+            event(2, status='success', user='adam', src_ip='10.0.0.2'),
+            event(3, status='success', user='adam', src_ip='10.0.0.3'),
+            event(4, status='success', user='adam', src_ip='203.0.113.10'),
+        ]
+        anomalies = detect_anomalies(events)
+        self.assertTrue(any('Rare source IP' in a.reason for a in anomalies))
 
     def test_off_hours_privileged_access(self):
         anomalies = detect_anomalies(
