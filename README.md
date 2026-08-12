@@ -2,7 +2,7 @@
 
 AI-SIEM is a defensive cybersecurity engineering project that ingests logs, normalizes events, runs detection logic, correlates alerts into incidents, calculates metrics, and exposes the result through a FastAPI API and lightweight SOC dashboard.
 
-The project now supports **real local log ingestion** through a Linux log agent and **SQLite persistence**. It can still bootstrap with bundled sample logs for first-run demo purposes, but new ingested events are stored in `data/ai_siem.db` and survive backend restarts.
+The project supports **real local log ingestion**, bounded async processing, Windows Event Log/Sysmon normalization, safe Sigma import/export, optional threat-intelligence enrichment, and durable SQLite persistence. It can bootstrap with bundled sample logs for first-run demo purposes, while new ingested events and analyst state survive backend restarts when SQLite is selected.
 
 This is still not a hyperscale enterprise SIEM replacement. It is a serious defensive engineering foundation and portfolio lab that demonstrates SOC platform architecture, backend engineering, parser design, detection engineering, API security, durable analyst workflows, and operational thinking. The enterprise target architecture and staged roadmap are documented in [`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md).
 
@@ -11,32 +11,33 @@ This is still not a hyperscale enterprise SIEM replacement. It is a serious defe
 ```mermaid
 flowchart LR
     A[Linux/Auth/Web log files] --> B[Linux log agent]
-    C[JSON events / API clients] --> D[/api/ingest]
+    C[JSON events / API clients] --> D[Auth + bounded async ingest]
     B --> D
-    D --> E[Parser / normalization]
-    E --> F[SQLite event store]
-    F --> G[Detection engine]
-    G --> H[Alerts]
-    H --> I[Correlation engine]
-    I --> J[Incidents]
-    F --> K[Explainable anomalies]
-    F --> L[Metrics]
-    L --> M[FastAPI API]
+    D --> E[Parser registry: Linux / Windows / Sysmon / Web]
+    E --> F{Storage adapter}
+    F --> G[SQLite default]
+    F --> H[PostgreSQL / OpenSearch options]
+    E --> I[Detection + anomaly engines]
+    I --> J[Alerts + incidents]
+    J --> K[Threat-intel enrichment]
+    J --> L[Durable ack / notes / triage]
+    K --> M[FastAPI API]
+    L --> M
     M --> N[SOC Dashboard]
 ```
 
 ## Main features
 
 - FastAPI backend with SOC-focused endpoints.
-- Bearer-token authentication with legacy `AI_SIEM_API_KEY` support and configurable multi-tenant principals/RBAC.
+- Bearer-token authentication with controlled legacy `AI_SIEM_API_KEY` support, configurable multi-tenant principals/RBAC, and optional JWT mode with issuer/audience/expiry/signature validation.
 - CORS support for the dashboard, including browser preflight requests.
-- SQLite event persistence in `data/ai_siem.db` by default.
+- SQLite event persistence in `data/ai_siem.db` by default, plus memory, PostgreSQL, and OpenSearch adapter options.
 - Real log tailing agent for Linux auth logs and web access logs.
 - Ingest limits for request size, log size, and total loaded events.
 - Thread-safe, bounded in-memory per-IP rate limiting; proxy headers are ignored unless `AI_SIEM_TRUST_PROXY_HEADERS=true`.
 - Request IDs on API responses and audit records.
 - Bounded pagination on event, alert, incident, anomaly, and triage list endpoints using `limit` and `offset`.
-- SQLite WAL mode, busy timeout, and durable analyst triage records.
+- SQLite WAL mode, busy timeout, durable triage, alert acknowledgement, and analyst notes.
 - Audit logging to `logs/audit.log` with control-character escaping and without logging secrets.
 - Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
@@ -44,7 +45,10 @@ flowchart LR
 - Alert suppression and AI-noise reduction for internal rare-source-IP events.
 - Correlated incidents with related alert IDs, evidence summaries, and timelines.
 - Lightweight statistical anomaly scoring with clear reasons and contributing features.
-- Docker Compose support and security CI.
+- Non-root Docker image, Render/Fly deployment templates, health check, and CI definitions for container build/smoke verification.
+- Windows Event Log IDs `4624`, `4625`, `4688`, `4104`, `4720`, `4732` and Sysmon normalization.
+- Safe Sigma YAML import/export with bounded schema validation and deterministic metadata mapping.
+- Opt-in AbuseIPDB/OTX enrichment with IP validation, fixed provider URLs, timeout, cache, and graceful provider failure.
 
 ## Security model
 
@@ -66,7 +70,10 @@ For multi-tenant deployments, use explicit principal configuration instead of sh
 export AI_SIEM_PRINCIPALS='{"token-for-tenant-a":{"principal_id":"soc-a","tenant_id":"tenant-a","roles":["analyst","ingestor"]},"reader-token-a":{"principal_id":"reader-a","tenant_id":"tenant-a","roles":["reader"]}}'
 ```
 
-Supported roles are `admin`, `reader`, `analyst`, `responder`, and `ingestor`. Every authenticated request has a principal and tenant context. Events, alerts, incidents, metrics, storage statistics, and triage records are filtered by the authenticated tenant; clients cannot select another tenant through a query parameter. `POST /api/ingest` requires `admin` or `ingestor`, while `POST /api/triage` requires `admin`, `analyst`, or `responder`. Use `GET /api/me` to inspect the current principal context.
+Supported roles are `admin`, `reader`, `analyst`, `responder`, and `ingestor`; JWT `viewer` is mapped to read-only behavior. Every authenticated request has a principal and tenant context. Events, alerts, incidents, metrics, storage statistics, ingestion batches, acknowledgements, notes, and triage records are filtered by the authenticated tenant; clients cannot select another tenant through a query parameter. Ingestion requires `admin` or `ingestor`; triage, threat-intel enrichment, alert acknowledgement, and analyst notes require `admin`, `analyst`, or `responder`. Use `GET /api/me` to inspect the current principal context.
+
+For migration deployments, use `AI_SIEM_AUTH_MODE=hybrid` or `jwt`. JWT mode requires `AI_SIEM_JWT_SECRET`, `AI_SIEM_JWT_ISSUER`, and `AI_SIEM_JWT_AUDIENCE`; it rejects legacy tokens. The current verifier intentionally supports HS256 only and is a migration foundation, not a substitute for enterprise OIDC/OAuth2.
+
 
 Fish shell:
 
@@ -228,6 +235,14 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `POST` | `/api/triage` | required + analyst/responder/admin | Record analyst triage. |
 | `GET` | `/api/me` | required | Return principal, tenant, and roles for the authenticated token. |
 | `GET` | `/api/ingest/batches` | required | Tenant-scoped ingestion lifecycle history. |
+| `GET` | `/api/alerts/acknowledgements` | required | Tenant-scoped alert acknowledgement records. |
+| `POST` | `/api/alerts/{alert_id}/acknowledge` | required + analyst/responder/admin | Acknowledge or unacknowledge one alert with bounded comment. |
+| `GET` | `/api/alerts/{alert_id}/notes` | required | Tenant-scoped notes for one alert. |
+| `POST` | `/api/alerts/{alert_id}/notes` | required + analyst/responder/admin | Persist one bounded analyst note. |
+| `GET` | `/api/threat-intel/status` | required | Provider configuration status without secrets. |
+| `POST` | `/api/threat-intel/enrich` | required + analyst/responder/admin | Opt-in global-IP enrichment through configured providers. |
+| `GET` | `/api/rules/sigma` | required | Export detection rules as YAML. |
+| `POST` | `/api/rules/sigma/import` | required + admin | Safely import bounded Sigma YAML rules. |
 
 ## Detection coverage
 
@@ -269,34 +284,29 @@ bandit -q -r backend agents -lll
 pip-audit -r requirements.txt
 ```
 
-## Docker
+## Docker and deployment
 
 ```bash
-export AI_SIEM_API_KEY='dev-token'
-docker compose up --build
+docker build --pull -t ai-siem:local .
+docker run --rm -p 8000:8000 \
+  -e AI_SIEM_AUTH_MODE=legacy \
+  -e AI_SIEM_API_KEY='dev-token' \
+  -e AI_SIEM_ALLOWED_ORIGIN='http://localhost:5173' \
+  ai-siem:local
 ```
 
-Docker hardening notes:
-
-- Uses `python:3.11-slim`.
-- Runs as a non-root `appuser`.
-- Adds `HEALTHCHECK` for `/api/health`.
-- Uses `.dockerignore` to keep secrets, Git metadata, logs, venvs, and node modules out of the build context.
+The image uses Python 3.12 slim, runs as a non-root user, includes a `/api/health` health check, and keeps secrets/Git metadata/logs out of the build context. Render and Fly.io manifests are provided in `render.yaml` and `fly.toml`; they are templates and require platform-side secret configuration and a verified deployment. Read [`docs/deployment.md`](docs/deployment.md) before deploying.
 
 ## Current limitations
 
-- SQLite is good for the lab but not for distributed production SIEM scale.
-- No RBAC or multi-user authorization model yet.
-- No TLS termination or secrets manager integration yet.
-- Parsers cover practical common formats but are not full ECS/OCSF coverage.
-- No Sigma import/export yet.
-- Anomaly detection is explainable/statistical, not enterprise ML.
+- SQLite remains the default and is appropriate for a single-process demo or controlled lab, not distributed production SIEM scale; PostgreSQL/OpenSearch adapters are optional and require their own dependencies, credentials, backups, and operational testing.
+- Legacy tokens remain available for controlled migration, while production identity should use OIDC/OAuth2, short-lived credentials, asymmetric signing, rotation, revocation, and centralized policy.
+- The Docker build and health smoke test are defined in CI, but the current sandbox does not provide a Docker daemon; no external live deployment URL is claimed.
+- Windows/Sysmon parsing covers the requested IDs but is not full ECS/OCSF coverage.
+- Sigma importer supports a deliberately bounded single-selection subset and rejects unsupported constructs.
+- Threat-intel enrichment is opt-in and advisory; provider failures or stale data must not be treated as proof of benignness or maliciousness.
+- Anomaly detection is explainable/statistical, not enterprise ML; automatic containment remains intentionally unimplemented.
 
 ## Roadmap
 
-- Add Windows Event Log collector.
-- Add Sysmon parser and Windows Event IDs 4624/4625/4688/4104/4720/4732.
-- Add Sigma rule import/export.
-- Add analyst notes persisted in SQLite.
-- Add dashboard filters and alert acknowledgement workflow.
-- Add PostgreSQL or OpenSearch backend option.
+The next priority is streaming ingestion with collector registration, retries, dead-letter queues, replay, and measured backpressure. Later releases should add enterprise OIDC, key rotation, PostgreSQL/OpenSearch production validation, data retention, case management, approval-gated response, disaster recovery, and a retrieval-grounded AI analyst layer. See [`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md) and [`docs/deployment.md`](docs/deployment.md).

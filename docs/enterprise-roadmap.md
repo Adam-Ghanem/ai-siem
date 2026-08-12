@@ -77,30 +77,30 @@ The repository's current single-process flow maps onto the middle of this design
 | Release | Scope | Exit criteria |
 |---|---|---|
 | R1: Enterprise hardening | Request IDs, bounded pagination, secure audit logging, thread-safe rate limits, durable triage, SQLite WAL/busy timeout, stable event validation, regression tests, and operational documentation. | All tests pass; security scanners pass; API responses expose pagination metadata; analyst triage survives restart; no secret or newline injection in audit logs. |
-| R2: Multi-tenant and identity | **Implemented foundation:** configurable token-to-principal mapping through `AI_SIEM_PRINCIPALS`, tenant-aware event/triage storage, tenant-scoped reads and analytics, RBAC roles, authenticated `/api/me`, and authorization audit records. **Next:** OIDC/OAuth2, per-tenant quotas, key rotation, and audit search. | Every protected operation has a tenant and principal; tenant isolation and reader/ingestor/analyst authorization tests pass. OIDC and centralized secret rotation remain follow-on work. |
-| R3: Streaming ingestion | Collector registration, syslog/HTTP connectors, durable queue, retry policy, dead-letter queue, backpressure, and replay. | Ingestion can resume after worker restart without losing acknowledged events; poison messages are isolated. |
-| R4: Enterprise analytics | Search index, time-range queries, detection scheduling, deduplication, suppression policies, threat-intelligence enrichment, and data retention. | Query latency and ingestion throughput are measured against an agreed workload; rules are versioned and explainable. |
-| R5: AI analyst layer | Retrieval-grounded investigation summaries, alert clustering, entity risk scoring, natural-language search translated to reviewed queries, and evaluation datasets. | AI outputs cite evidence, are reproducible enough for audit, have confidence/abstention behavior, and cannot trigger irreversible response without policy approval. |
+| R2: Multi-tenant and identity | **Implemented foundation:** configurable principals/RBAC, tenant-aware event/triage/ingest/ack/note storage, tenant-scoped reads, authenticated `/api/me`, authorization audit records, and optional HS256 JWT migration mode. **Next:** OIDC/OAuth2, asymmetric signing, per-tenant quotas, key rotation, revocation, and audit search. | Every protected operation has a tenant and principal; tenant isolation, JWT negative cases, and role authorization tests pass. OIDC and centralized secret rotation remain follow-on work. |
+| R3: Streaming ingestion | **Partial foundation implemented:** bounded `asyncio.to_thread` parsing/persistence, batch lifecycle, event-size limits, and parser statistics. **Next:** collector registration, durable queue, retry policy, dead-letter queue, backpressure across workers, and replay. | The current single-process pipeline avoids blocking the event loop and records batch state. Distributed resume/no-loss guarantees require the next queue-based release. |
+| R4: Enterprise analytics | **Partial foundation implemented:** Windows/Sysmon parser coverage, safe Sigma import/export, opt-in AbuseIPDB/OTX enrichment, SQLite default, and optional PostgreSQL/OpenSearch adapters. **Next:** search index validation, time-range queries, detection scheduling, retention, measured load, and provider governance. | The current adapters are contract-tested and fail closed when optional dependencies/configuration are absent. Production throughput and failover are not yet claimed. |
+| R5: AI analyst layer | Retrieval-grounded investigation summaries, alert clustering, entity risk scoring, natural-language search translated to reviewed queries, and evaluation datasets. | AI outputs cite evidence, are reproducible enough for audit, have confidence/abstention behavior, and cannot trigger irreversible response without policy approval. This remains future work; current anomaly logic is deterministic/statistical. |
 | R6: Response and governance | Approval-gated playbooks, connector isolation, case management, evidence export, tenant isolation testing, backups, disaster recovery, and compliance controls. | Restore drills, access reviews, response approvals, and audit export are tested and documented. |
 
 ## Immediate Risks Found in the Baseline
 
 | Area | Current limitation | Priority |
 |---|---|---:|
-| Query scalability | `/api/events` and related endpoints return unbounded lists and recompute derived data on every request. | P0 |
-| Analyst state | Triage records are process-local and disappear on restart. | P0 |
-| Audit integrity | Audit detail is concatenated into a line without sanitization; attacker-controlled values can forge log lines. | P0 |
-| Rate limiting | In-memory buckets are not bounded, are not synchronized, and trust `X-Forwarded-For` from any caller. | P0 |
-| Persistence | SQLite does not enable WAL/busy timeout; per-request initialization and writes are not prepared for concurrent workers. | P1 |
-| Authentication | The default legacy token remains a local-development convenience; multi-tenant principals and roles are now configurable, but OIDC/OAuth2, revocation, rotation, and centralized secret management are still pending. | P1 |
-| Event contract | Validation is permissive, invalid timestamps silently become `now`, and the schema lacks tenant, ingestion, trace, and integrity metadata. | P1 |
+| Query scalability | List APIs are bounded, but derived detections/correlation still execute in-process and are not benchmarked for enterprise volume. | P1 |
+| Analyst state | Triage, acknowledgements, and notes are durable for configured adapters; case management, retention, evidence export, and restore drills remain. | P1 |
+| Audit integrity | Audit values are control-character escaped and secrets are excluded, but centralized audit search, tamper evidence, and export remain. | P1 |
+| Rate limiting | In-memory buckets are bounded and synchronized; distributed quotas and per-tenant rate budgets remain. | P1 |
+| Persistence | SQLite uses WAL/busy timeout and adapters exist for PostgreSQL/OpenSearch, but remote backend production validation, backups, migrations, and failover remain. | P1 |
+| Authentication | Legacy tokens remain a controlled migration path; JWT HS256 mode validates key claims, but OIDC/OAuth2, asymmetric keys, revocation, rotation, and centralized secret management are still pending. | P1 |
+| Event contract | Tenant and event metadata are present and parser fields are bounded, but full ECS/OCSF alignment, strict timestamp policy, integrity metadata, and schema versioning remain. | P1 |
 | Detection architecture | The repository has deterministic rules and statistical heuristics, but no real model lifecycle, feature store, evaluation set, or AI evidence contract. | P1 |
 | Response safety | Workflow YAML exists, but there is no approval gate, idempotency key, connector isolation, or durable execution record. | P1 |
-| Deployment | A single process and SQLite are appropriate for a demo or small lab, not for a large enterprise's volume or availability objectives. | P2 |
+| Deployment | Docker, Render, and Fly.io templates plus health checks are present, but no external live deployment is claimed; the local sandbox has no Docker daemon. SQLite remains single-process. | P2 |
 
 ## Release 2 Identity Contract
 
-The current identity layer accepts either the legacy `AI_SIEM_API_KEY` or a JSON mapping in `AI_SIEM_PRINCIPALS`. Each configured token resolves to a `principal_id`, `tenant_id`, and one or more roles. The API derives tenant scope from that authenticated context and does not accept a client-supplied tenant selector. This is a useful intermediate control for a lab or controlled deployment; a large enterprise should replace shared static bearer secrets with OIDC/OAuth2, short-lived credentials, rotation, revocation, and a centralized policy decision point.
+The current identity layer supports legacy `AI_SIEM_API_KEY`, JSON principal mapping through `AI_SIEM_PRINCIPALS`, and an optional JWT mode selected with `AI_SIEM_AUTH_MODE=jwt` or `hybrid`. JWT mode validates HS256 signatures plus issuer, audience, expiry, not-before, issued-at, subject, tenant, and role claims. The API derives tenant scope from the authenticated context and does not accept a client-supplied tenant selector. This is a migration foundation for a lab or controlled deployment; a large enterprise should replace shared static bearer secrets with OIDC/OAuth2, short-lived credentials, asymmetric key rotation, revocation, and a centralized policy decision point.
 
 | Role | Read SOC data | Ingest events | Write triage |
 |---|---:|---:|---:|
