@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -10,31 +11,28 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
+from .ingestion import AsyncIngestionPipeline
 from .detection import run_detections
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
 from .rules import RULES
+from .sigma import SigmaRuleError, export_sigma, import_sigma
+from .threat_intel import CACHE_TTL_SECONDS, MAX_INDICATORS_PER_REQUEST, THREAT_INTEL, normalize_indicators
 from .security import (
     MAX_EVENTS_PER_INGEST,
     MAX_IN_MEMORY_EVENTS,
     MAX_RAW_LOG_BYTES,
     audit_log,
     enforce_auth,
+    enforce_permission,
     enforce_rate_limit,
 )
-from .storage import (
-    init_db,
-    load_events as load_stored_events,
-    load_triage,
-    save_events,
-    save_triage,
-)
-from .storage import stats as storage_stats
+from .storage_backends import build_storage_backend
 
 AI_SIEM_HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
 AI_SIEM_PORT = int(os.getenv('AI_SIEM_PORT', '8000'))
@@ -43,6 +41,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
     'http://localhost:5173',
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
+STORAGE = build_storage_backend(AI_SIEM_STORAGE)
 MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
 DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
@@ -60,23 +59,30 @@ app.add_middleware(
     allow_headers=['content-type', 'authorization'],
 )
 
-TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
+TRIAGE = STORAGE.load_triage(limit=10000) if AI_SIEM_STORAGE != 'memory' else []
+INGEST_BATCHES = STORAGE.load_ingest_batches(limit=10000) if AI_SIEM_STORAGE != 'memory' else []
+INGESTION_PIPELINE = AsyncIngestionPipeline(
+    storage_enabled=AI_SIEM_STORAGE != 'memory',
+    persist_callback=STORAGE.save_events,
+)
 
 
 def _load_sample_events():
     if DATA_FILE.exists():
-        return parse_events(json.loads(DATA_FILE.read_text(encoding='utf-8')))
+        events = parse_events(json.loads(DATA_FILE.read_text(encoding='utf-8')))
+        for event in events:
+            event.tenant_id = 'default'
+        return events
     return []
 
 
 def load_events():
-    if AI_SIEM_STORAGE == 'sqlite':
-        init_db()
-        stored = load_stored_events(limit=MAX_IN_MEMORY_EVENTS)
+    if AI_SIEM_STORAGE != 'memory':
+        stored = STORAGE.load_events(limit=MAX_IN_MEMORY_EVENTS)
         if stored:
             return stored
         sample = _load_sample_events()
-        save_events(sample)
+        STORAGE.save_events(sample)
         return sample
     return _load_sample_events()
 
@@ -84,16 +90,27 @@ def load_events():
 EVENTS = load_events()
 
 
-def alerts():
-    return run_detections(EVENTS)
+def _record_ingest_batch(record: dict) -> dict:
+    if AI_SIEM_STORAGE != 'memory':
+        return STORAGE.save_ingest_batch(record)
+    INGEST_BATCHES.append(record)
+    return record
 
 
-def incidents():
-    return correlate(alerts())
+def tenant_events(tenant_id: str) -> list:
+    return [event for event in EVENTS if event.tenant_id == tenant_id]
 
 
-def anomalies():
-    return detect_anomalies(EVENTS)
+def alerts(tenant_id: str | None = None):
+    return run_detections(tenant_events(tenant_id) if tenant_id else EVENTS)
+
+
+def incidents(tenant_id: str | None = None):
+    return correlate(alerts(tenant_id))
+
+
+def anomalies(tenant_id: str | None = None):
+    return detect_anomalies(tenant_events(tenant_id) if tenant_id else EVENTS)
 
 
 def _page(items, limit: int, offset: int, response: Response):
@@ -119,7 +136,10 @@ async def security_middleware(request: Request, call_next):
     try:
         if request.method != 'OPTIONS':
             enforce_rate_limit(request)
-            enforce_auth(request)
+            context = enforce_auth(request)
+            request.state.auth = context
+            if context is not None:
+                enforce_permission(request, context)
     except HTTPException as exc:
         response = JSONResponse(
             status_code=exc.status_code,
@@ -128,6 +148,8 @@ async def security_middleware(request: Request, call_next):
         response.headers['X-Request-ID'] = request.state.request_id
         return response
 
+    if not hasattr(request.state, 'auth'):
+        request.state.auth = None
     response = await call_next(request)
     response.headers['X-Request-ID'] = request.state.request_id
     return response
@@ -161,6 +183,7 @@ def health():
 
 @app.get('/api/events')
 def get_events(
+    request: Request,
     response: Response,
     source: str | None = None,
     event_type: str | None = None,
@@ -170,7 +193,7 @@ def get_events(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = EVENTS
+    data = tenant_events(request.state.auth.tenant_id)
     if source:
         data = [e for e in data if e.source == source]
     if event_type:
@@ -186,6 +209,7 @@ def get_events(
 
 @app.get('/api/alerts')
 def get_alerts(
+    request: Request,
     response: Response,
     severity: str | None = None,
     tactic: str | None = None,
@@ -195,7 +219,7 @@ def get_alerts(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = alerts()
+    data = alerts(request.state.auth.tenant_id)
     if severity:
         data = [a for a in data if a.severity == severity]
     if tactic:
@@ -209,15 +233,97 @@ def get_alerts(
     return [a.to_dict() for a in _page(data, limit, offset, response)]
 
 
+def _bounded_alert_id(alert_id: str) -> str:
+    value = str(alert_id or '').strip()
+    if not value or len(value) > 128 or any(char in value for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='Invalid alert_id')
+    return value
+
+
+def _alert_exists(alert_id: str, tenant_id: str) -> bool:
+    return any(alert.alert_id == alert_id for alert in alerts(tenant_id))
+
+
+@app.get('/api/alerts/acknowledgements')
+def get_alert_acknowledgements(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    data = STORAGE.load_alert_acknowledgements(tenant_id=request.state.auth.tenant_id, limit=10000, offset=0)
+    return _page(data, limit, offset, response)
+
+
+@app.post('/api/alerts/{alert_id}/acknowledge')
+async def acknowledge_alert(request: Request, alert_id: str):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get('acknowledged'), bool):
+        raise HTTPException(status_code=400, detail='acknowledged must be boolean')
+    comment = payload.get('comment', '')
+    if not isinstance(comment, str) or len(comment) > 2048 or any(char in comment for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='comment is invalid or too large')
+    record = STORAGE.save_alert_acknowledgement({
+        'alert_id': alert_id,
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
+        'acknowledged': payload['acknowledged'],
+        'comment': comment.strip() or None,
+        'request_id': getattr(request.state, 'request_id', None),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
+    audit_log(request, 'alert_acknowledgement', 'success', f'alert_id={alert_id}')
+    return record
+
+
+@app.get('/api/alerts/{alert_id}/notes')
+def get_alert_notes(request: Request, response: Response, alert_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    data = STORAGE.load_analyst_notes(alert_id, tenant_id=request.state.auth.tenant_id, limit=10000, offset=0)
+    return _page(data, limit, offset, response)
+
+
+@app.post('/api/alerts/{alert_id}/notes')
+async def add_alert_note(request: Request, alert_id: str):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    note = payload.get('note') if isinstance(payload, dict) else None
+    analyst = payload.get('analyst', 'unknown') if isinstance(payload, dict) else 'unknown'
+    if not isinstance(note, str) or not note.strip() or len(note) > 4096 or any(char in note for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='note is required, single-line, and at most 4096 characters')
+    if not isinstance(analyst, str) or not analyst.strip() or len(analyst) > 128 or any(char in analyst for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='analyst is invalid')
+    record = STORAGE.save_analyst_note({
+        'alert_id': alert_id,
+        'note': note.strip(),
+        'analyst': analyst.strip(),
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
+        'request_id': getattr(request.state, 'request_id', None),
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    })
+    audit_log(request, 'analyst_note', 'success', f'alert_id={alert_id}')
+    return record
+
+
 @app.get('/api/incidents')
 def get_incidents(
+    request: Request,
     response: Response,
     status: str | None = None,
     priority: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = incidents()
+    data = incidents(request.state.auth.tenant_id)
     if status:
         data = [i for i in data if i.status == status]
     if priority:
@@ -226,16 +332,75 @@ def get_incidents(
 
 
 @app.get('/api/incidents/{incident_id}')
-def get_incident(incident_id: str):
-    for incident in incidents():
+def get_incident(request: Request, incident_id: str):
+    for incident in incidents(request.state.auth.tenant_id):
         if incident.incident_id == incident_id:
             return incident.to_dict()
     raise HTTPException(status_code=404, detail='Incident not found')
 
 
 @app.get('/api/anomalies')
-def get_anomalies(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
-    return [a.to_dict() for a in _page(anomalies(), limit, offset, response)]
+def get_anomalies(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    return [a.to_dict() for a in _page(anomalies(request.state.auth.tenant_id), limit, offset, response)]
+
+
+@app.get('/api/threat-intel/status')
+def threat_intel_status():
+    return {
+        'providers': THREAT_INTEL.configured_providers(),
+        'max_indicators_per_request': MAX_INDICATORS_PER_REQUEST,
+        'cache_ttl_seconds': CACHE_TTL_SECONDS,
+    }
+
+
+@app.post('/api/threat-intel/enrich')
+async def enrich_threat_intel(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        audit_log(request, 'threat_intel', 'invalid_json', str(exc))
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    indicators = payload.get('indicators') if isinstance(payload, dict) else None
+    if not isinstance(indicators, list) or not indicators:
+        raise HTTPException(status_code=400, detail='indicators must be a non-empty list')
+    if len(indicators) > MAX_INDICATORS_PER_REQUEST:
+        raise HTTPException(
+            status_code=413,
+            detail=f'Maximum {MAX_INDICATORS_PER_REQUEST} indicators per request',
+        )
+    normalized = normalize_indicators(indicators)
+    results = await asyncio.to_thread(THREAT_INTEL.enrich, normalized)
+    audit_log(request, 'threat_intel', 'success', f'count={len(results)}')
+    return {'tenant_id': request.state.auth.tenant_id, 'results': results}
+
+
+@app.get('/api/rules/sigma')
+def export_sigma_rules():
+    return PlainTextResponse(
+        export_sigma(get_rules()),
+        media_type='application/yaml',
+        headers={'Content-Disposition': 'attachment; filename=ai-siem-rules.yml'},
+    )
+
+
+@app.post('/api/rules/sigma/import')
+async def import_sigma_rules(request: Request):
+    try:
+        raw = await request.body()
+        imported = import_sigma(raw)
+    except SigmaRuleError as exc:
+        audit_log(request, 'sigma_import', 'rejected', str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing_ids = {str(rule.get('rule_id')) for rule in RULES}
+    duplicate_ids = sorted(
+        rule['rule_id'] for rule in imported if rule['rule_id'] in existing_ids
+    )
+    if duplicate_ids:
+        audit_log(request, 'sigma_import', 'duplicate_rule', ','.join(duplicate_ids))
+        raise HTTPException(status_code=409, detail='Rule already exists')
+    RULES.extend(imported)
+    audit_log(request, 'sigma_import', 'success', f'count={len(imported)}')
+    return {'imported': len(imported), 'rule_ids': [rule['rule_id'] for rule in imported]}
 
 
 @app.get('/api/rules')
@@ -249,11 +414,15 @@ def get_attack_coverage():
 
 
 @app.get('/api/metrics')
-def get_metrics():
-    metrics = calculate_metrics(EVENTS, alerts(), incidents())
-    unknown = parser_stats()['unknown_events']
+def get_metrics(request: Request):
+    events = tenant_events(request.state.auth.tenant_id)
+    tenant_alerts = alerts(request.state.auth.tenant_id)
+    tenant_incidents = incidents(request.state.auth.tenant_id)
+    metrics = calculate_metrics(events, tenant_alerts, tenant_incidents)
+    unknown = sum(1 for event in events if event.source == 'unknown')
     metrics['parsing_failed_events'] = unknown
-    metrics['unknown_event_rate_pct'] = round((unknown / max(len(EVENTS), 1)) * 100, 2)
+    metrics['unknown_event_rate_pct'] = round((unknown / max(len(events), 1)) * 100, 2)
+    metrics['tenant_id'] = request.state.auth.tenant_id
     return metrics
 
 
@@ -263,13 +432,20 @@ def get_parser_stats():
 
 
 @app.get('/api/storage/stats')
-def get_storage_stats():
-    if AI_SIEM_STORAGE == 'sqlite':
-        return storage_stats()
-    return {'backend': 'memory', 'stored_events': len(EVENTS)}
+def get_storage_stats(request: Request):
+    tenant_id = request.state.auth.tenant_id
+    if AI_SIEM_STORAGE != 'memory':
+        return STORAGE.stats(tenant_id=tenant_id)
+    return {
+        'backend': 'memory',
+        'tenant_id': tenant_id,
+        'stored_events': len(tenant_events(tenant_id)),
+        'stored_triage_records': len([record for record in TRIAGE if record.get('tenant_id') == tenant_id]),
+        'stored_ingest_batches': len([record for record in INGEST_BATCHES if record.get('tenant_id') == tenant_id]),
+    }
 
 
-def _extract_items(payload: Any):
+def _extract_items(payload: Any, tenant_id: str):
     if isinstance(payload, dict):
         if 'logs' in payload:
             items = payload['logs']
@@ -288,10 +464,10 @@ def _extract_items(payload: Any):
             detail=f'Maximum {MAX_EVENTS_PER_INGEST} events per ingest request',
         )
 
-    if len(EVENTS) + len(items) > MAX_IN_MEMORY_EVENTS:
+    if len(tenant_events(tenant_id)) + len(items) > MAX_IN_MEMORY_EVENTS:
         raise HTTPException(
             status_code=413,
-            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
+            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached for tenant',
         )
 
     for item in items:
@@ -307,36 +483,93 @@ def _extract_items(payload: Any):
 
 @app.post('/api/ingest')
 async def ingest(request: Request):
+    tenant_id = request.state.auth.tenant_id
+    principal_id = request.state.auth.principal_id
+    batch_id = uuid4().hex
+    received_at = datetime.now(timezone.utc).isoformat()
     try:
         payload = await request.json()
     except Exception:
-        audit_log(request, 'ingest', 'invalid_json')
+        _record_ingest_batch({
+            'batch_id': batch_id,
+            'tenant_id': tenant_id,
+            'principal_id': principal_id,
+            'received_at': received_at,
+            'item_count': 0,
+            'rejected_count': 1,
+            'status': 'rejected',
+            'error': 'Invalid JSON body',
+        })
+        audit_log(request, 'ingest', 'invalid_json', f'batch_id={batch_id}')
         raise HTTPException(status_code=400, detail='Invalid JSON body')
 
-    items = _extract_items(payload)
+    items = _extract_items(payload, tenant_id)
     before_stats = parser_stats()
-    parsed = parse_events(items)
+    try:
+        result = await INGESTION_PIPELINE.process(items, tenant_id)
+        parsed = result.events
+    except ValueError as exc:
+        _record_ingest_batch({
+            'batch_id': batch_id,
+            'tenant_id': tenant_id,
+            'principal_id': principal_id,
+            'received_at': received_at,
+            'item_count': len(items),
+            'rejected_count': len(items),
+            'status': 'rejected',
+            'error': str(exc),
+        })
+        audit_log(request, 'ingest', 'parse_failed', f'batch_id={batch_id}')
+        raise
     EVENTS.extend(parsed)
 
-    if AI_SIEM_STORAGE == 'sqlite':
-        save_events(parsed)
-
     after_stats = parser_stats()
-    audit_log(request, 'ingest', 'success', f'count={len(parsed)}')
+    unknown_count = after_stats['unknown_events'] - before_stats['unknown_events']
+    batch = _record_ingest_batch({
+        'batch_id': batch_id,
+        'tenant_id': tenant_id,
+        'principal_id': principal_id,
+        'received_at': received_at,
+        'item_count': len(items),
+        'accepted_count': len(parsed),
+        'rejected_count': 0,
+        'unknown_count': unknown_count,
+        'status': 'accepted_with_unknowns' if unknown_count else 'accepted',
+    })
+    audit_log(request, 'ingest', 'success', f'batch_id={batch_id};count={len(parsed)}')
 
     return {
+        'batch_id': batch['batch_id'],
         'ingested': len(parsed),
-        'total_events': len(EVENTS),
+        'total_events': len(tenant_events(tenant_id)),
         'storage': AI_SIEM_STORAGE,
-        'unknown_events_detected': (
-            after_stats['unknown_events'] - before_stats['unknown_events']
-        ),
+        'unknown_events_detected': unknown_count,
     }
 
 
+@app.get('/api/ingest/batches')
+def get_ingest_batches(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    tenant_id = request.state.auth.tenant_id
+    if AI_SIEM_STORAGE != 'memory':
+        data = STORAGE.load_ingest_batches(tenant_id=tenant_id, limit=10000, offset=0)
+    else:
+        data = [record for record in reversed(INGEST_BATCHES) if record.get('tenant_id') == tenant_id]
+    return _page(data, limit, offset, response)
+
+
+@app.get('/api/me')
+def get_me(request: Request):
+    return request.state.auth.to_dict()
+
+
 @app.get('/api/triage')
-def get_triage(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
-    data = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else list(reversed(TRIAGE))
+def get_triage(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    tenant_id = request.state.auth.tenant_id
+    data = (
+        STORAGE.load_triage(limit=10000, tenant_id=tenant_id)
+        if AI_SIEM_STORAGE != 'memory'
+        else [record for record in reversed(TRIAGE) if record.get('tenant_id') == tenant_id]
+    )
     return _page(data, limit, offset, response)
 
 
@@ -368,9 +601,11 @@ async def triage(request: Request):
         'status': 'recorded',
         'request_id': getattr(request.state, 'request_id', None),
         'created_at': datetime.now(timezone.utc).isoformat(),
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
     }
-    if AI_SIEM_STORAGE == 'sqlite':
-        record = save_triage(record)
+    if AI_SIEM_STORAGE != 'memory':
+        record = STORAGE.save_triage(record)
     else:
         record['triage_id'] = uuid4().hex
         TRIAGE.append(record)

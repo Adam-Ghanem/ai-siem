@@ -24,6 +24,7 @@
       <div class="status-card">
         <strong>Monitoring active</strong>
         <span id="backend-status">Checking backend...</span>
+        <small id="identity-status">Identity context pending</small>
       </div>
     </aside>
 
@@ -38,6 +39,8 @@
           <div><span>Environment</span><strong>Portfolio SOC Lab</strong></div>
           <div><span>Mode</span><strong id="soc-mode">Live data</strong></div>
           <div><span>Source</span><strong id="soc-source">FastAPI backend</strong></div>
+          <div><span>Tenant</span><strong id="soc-tenant">—</strong></div>
+          <div><span>Principal</span><strong id="soc-principal">—</strong></div>
           <div><span>Last Refresh</span><strong id="last-refresh">Pending</strong></div>
         </div>
         <div class="kpis">
@@ -59,7 +62,7 @@
       <section id="anomalies" class="view"><article class="panel full"><h3>Anomaly Review</h3><p>Explainable statistical anomalies with contributing features.</p><div id="anomalies-list"></div></article></section>
       <section id="analysis" class="view"><div class="stack"><article class="panel full"><h3>Live Analysis</h3><p>Automated triage marker for the highest-confidence alert.</p><div class="analysis-box" id="analysis-box"><strong>Waiting for analysis...</strong><span>Click Run Live Analysis.</span></div></article><article class="panel full"><h3>Recommended Response</h3><div id="response-list"></div></article></div></section>
       <section id="detections" class="view"><article class="panel full"><h3>Detection Engineering Rules</h3><p>Rules mapped to MITRE ATT&CK.</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Rule</th><th>Severity</th><th>Tactic</th><th>Technique</th></tr></thead><tbody id="detections-body"></tbody></table></div></article></section>
-      <section id="content" class="view"><div class="cards"><article class="panel"><h3>Source Distribution</h3><div id="source-distribution"></div></article><article class="panel"><h3>Event Type Distribution</h3><div id="event-type-distribution"></div></article></div></section>
+      <section id="content" class="view"><div class="cards"><article class="panel"><h3>Source Distribution</h3><div id="source-distribution"></div></article><article class="panel"><h3>Event Type Distribution</h3><div id="event-type-distribution"></div></article><article class="panel full"><h3>Ingestion Batch Ledger</h3><p>Tenant-scoped accepted, rejected, and unknown-event status.</p><div id="ingest-batches"></div></article></div></section>
       <section id="reports" class="view"><article class="panel full"><h3>Security Report Summary</h3><p>Use API outputs to produce incident reports and portfolio screenshots.</p><div class="cards" id="reports-list"><div class="mini"><strong>README</strong><br><span>Architecture, endpoints, limitations, roadmap</span></div><div class="mini"><strong>Tests</strong><br><span>Parser, detection, correlation, anomaly, metrics, API</span></div></div></article></section>
     </main>
   </div>

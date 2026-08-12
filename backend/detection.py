@@ -1,8 +1,9 @@
 from __future__ import annotations
+import os
 import re
 from collections import defaultdict
 from hashlib import sha256
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from .models import Alert, Event
 from .rules import RULES
 ACTIONS={'critical':'Escalate immediately, preserve evidence, and contain if confirmed.','high':'Review evidence, validate scope, and contain if unauthorized.','medium':'Investigate context and monitor for progression.','low':'Document and monitor.'}
@@ -27,13 +28,27 @@ def _stable_id(prefix, *parts):
     raw='|'.join(str(p) for p in parts)
     return f"{prefix}-{sha256(raw.encode('utf-8')).hexdigest()[:10].upper()}"
 
+TREAT_DOCUMENTATION_IPS_AS_EXTERNAL = os.getenv(
+    'AI_SIEM_TREAT_DOCUMENTATION_IPS_AS_EXTERNAL', 'true'
+).lower() == 'true'
+DOCUMENTATION_NETWORKS = (
+    ip_network('192.0.2.0/24'),
+    ip_network('198.51.100.0/24'),
+    ip_network('203.0.113.0/24'),
+)
+
+
 def _is_external_ip(value):
-    if not value: return False
-    try: ip=ip_address(value)
-    except ValueError: return False
-    text=str(ip)
-    private_prefixes=('10.','192.168.','172.16.','172.17.','172.18.','172.19.','172.2','172.30.','172.31.','fc','fd')
-    return not (ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or text.startswith(private_prefixes))
+    if not value:
+        return False
+    try:
+        ip = ip_address(value)
+    except ValueError:
+        return False
+    return ip.is_global or (
+        TREAT_DOCUMENTATION_IPS_AS_EXTERNAL
+        and any(ip in network for network in DOCUMENTATION_NETWORKS)
+    )
 
 def _entity(rule,e): return (rule['rule_id'], e.src_ip, e.user, e.asset)
 def _suppressed(cache, rule, event):

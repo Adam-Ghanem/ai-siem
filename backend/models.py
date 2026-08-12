@@ -35,6 +35,8 @@ class Event:
     status: str | None = None
     message: str | None = None
     raw_log: str = ''
+    tenant_id: str = 'default'
+    event_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> 'Event':
@@ -50,6 +52,8 @@ class Event:
             asset=data.get('asset'), user=data.get('user'), src_ip=data.get('src_ip'), dst_ip=data.get('dst_ip'),
             process_name=data.get('process_name'), command_line=data.get('command_line'), status=data.get('status'),
             message=data.get('message'), raw_log=str(data.get('raw_log') or data),
+            tenant_id=str(data.get('tenant_id') or 'default'),
+            event_id=str(data.get('event_id')) if data.get('event_id') is not None else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
