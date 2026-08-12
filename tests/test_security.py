@@ -51,6 +51,25 @@ class SecurityTests(unittest.TestCase):
         text=AUDIT_PATH.read_text(encoding='utf-8')
         self.assertIn('action=triage',text)
         self.assertNotIn('Bearer',text)
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertTrue(r.json().get('request_id'))
+
+    def test_audit_detail_cannot_inject_a_new_log_line(self):
+        r=self.client.post(
+            '/api/triage',
+            headers=AUTH,
+            json={'alert_id':'AL-\nforged=1', 'action':'reviewed'},
+        )
+        self.assertEqual(r.status_code, 200)
+        text=AUDIT_PATH.read_text(encoding='utf-8')
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertFalse(any(line.startswith('forged=1') for line in text.splitlines()))
+
+    def test_triage_is_readable_from_api(self):
+        self.client.post('/api/triage', headers=AUTH, json={'alert_id':'AL-2','action':'closed'})
+        response = self.client.get('/api/triage?limit=1', headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
 
     def test_parser_stats_unknown_format(self):
         parse_event('this format is not supported')

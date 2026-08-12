@@ -23,7 +23,15 @@ def _is_external_ip(value: str | None) -> bool:
         ip = ip_address(value)
     except ValueError:
         return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+    text = str(ip)
+    private_prefixes = ('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.2', '172.30.', '172.31.', 'fc', 'fd')
+    return not (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or text.startswith(private_prefixes)
+    )
 
 
 def detect_anomalies(events:list[Event])->list[Anomaly]:
@@ -44,7 +52,7 @@ def detect_anomalies(events:list[Event])->list[Anomaly]:
             has_baseline=len(known)>=MIN_BASELINE_SOURCES
             if has_baseline and is_rare_external and e.src_ip not in known and rare_src_counts[e.user]<MAX_RARE_SOURCE_ANOMALIES_PER_USER:
                 rare_src_counts[e.user]+=1
-                out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,MIN_RARE_SOURCE_SCORE,f'Rare external source IP {e.src_ip} for user {e.user}',{'src_ip':e.src_ip,'known_sources':sorted(known)},[e.id],'Validate VPN/travel context and check for credential theft.'))
+                out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,MIN_RARE_SOURCE_SCORE,f'Rare source IP {e.src_ip} for user {e.user} (external)',{'src_ip':e.src_ip,'known_sources':sorted(known)},[e.id],'Validate VPN/travel context and check for credential theft.'))
             known.add(e.src_ip)
         if e.user in {'root','admin','administrator'} and e.status=='success' and (e.timestamp.hour<7 or e.timestamp.hour>=20): out.append(Anomaly(f"AN-{uuid4().hex[:10]}",e.user,.76,'Privileged access outside business hours',{'hour':e.timestamp.hour,'asset':e.asset,'src_ip':e.src_ip},[e.id],'Confirm approval and review session commands.'))
         if e.process_name and e.command_line:

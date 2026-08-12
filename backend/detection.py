@@ -31,7 +31,9 @@ def _is_external_ip(value):
     if not value: return False
     try: ip=ip_address(value)
     except ValueError: return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+    text=str(ip)
+    private_prefixes=('10.','192.168.','172.16.','172.17.','172.18.','172.19.','172.2','172.30.','172.31.','fc','fd')
+    return not (ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or text.startswith(private_prefixes))
 
 def _entity(rule,e): return (rule['rule_id'], e.src_ip, e.user, e.asset)
 def _suppressed(cache, rule, event):

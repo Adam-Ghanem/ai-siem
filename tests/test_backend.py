@@ -44,5 +44,17 @@ class BackendApiTests(unittest.TestCase):
         self.assertTrue(any(t['technique'] == 'T1110' for t in body['techniques']))
         self.assertEqual(body['unmapped_rules'], [])
 
+    def test_list_endpoints_are_bounded_and_return_request_metadata(self):
+        response = self.client.get('/api/events?limit=2&offset=1', headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(response.json()), 2)
+        self.assertEqual(response.headers['X-Page-Limit'], '2')
+        self.assertEqual(response.headers['X-Page-Offset'], '1')
+        self.assertTrue(response.headers.get('X-Request-ID'))
+
+    def test_invalid_pagination_is_rejected(self):
+        response = self.client.get('/api/events?limit=0', headers=AUTH)
+        self.assertEqual(response.status_code, 400)
+
 if __name__ == '__main__':
     unittest.main()
