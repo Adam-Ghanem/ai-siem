@@ -169,6 +169,8 @@ def enforce_permission(request: Request, context: AuthContext) -> None:
         required = ('admin', 'ingestor')
     elif request.url.path == '/api/triage' and request.method == 'POST':
         required = ('admin', 'analyst', 'responder')
+    elif request.url.path == '/api/threat-intel/enrich' and request.method == 'POST':
+        required = ('admin', 'analyst', 'responder')
     else:
         required = ('admin', 'reader', 'ingestor', 'analyst', 'responder')
     if not context.has_any_role(*required):

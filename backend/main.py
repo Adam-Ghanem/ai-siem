@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
 from .rules import RULES
 from .sigma import SigmaRuleError, export_sigma, import_sigma
+from .threat_intel import CACHE_TTL_SECONDS, MAX_INDICATORS_PER_REQUEST, THREAT_INTEL, normalize_indicators
 from .security import (
     MAX_EVENTS_PER_INGEST,
     MAX_IN_MEMORY_EVENTS,
@@ -265,6 +267,36 @@ def get_incident(request: Request, incident_id: str):
 @app.get('/api/anomalies')
 def get_anomalies(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
     return [a.to_dict() for a in _page(anomalies(request.state.auth.tenant_id), limit, offset, response)]
+
+
+@app.get('/api/threat-intel/status')
+def threat_intel_status():
+    return {
+        'providers': THREAT_INTEL.configured_providers(),
+        'max_indicators_per_request': MAX_INDICATORS_PER_REQUEST,
+        'cache_ttl_seconds': CACHE_TTL_SECONDS,
+    }
+
+
+@app.post('/api/threat-intel/enrich')
+async def enrich_threat_intel(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        audit_log(request, 'threat_intel', 'invalid_json', str(exc))
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    indicators = payload.get('indicators') if isinstance(payload, dict) else None
+    if not isinstance(indicators, list) or not indicators:
+        raise HTTPException(status_code=400, detail='indicators must be a non-empty list')
+    if len(indicators) > MAX_INDICATORS_PER_REQUEST:
+        raise HTTPException(
+            status_code=413,
+            detail=f'Maximum {MAX_INDICATORS_PER_REQUEST} indicators per request',
+        )
+    normalized = normalize_indicators(indicators)
+    results = await asyncio.to_thread(THREAT_INTEL.enrich, normalized)
+    audit_log(request, 'threat_intel', 'success', f'count={len(results)}')
+    return {'tenant_id': request.state.auth.tenant_id, 'results': results}
 
 
 @app.get('/api/rules/sigma')
