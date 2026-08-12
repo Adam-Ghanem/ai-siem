@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .anomaly import detect_anomalies
 from .correlation import correlate
@@ -20,6 +20,7 @@ from .detection import run_detections
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
 from .rules import RULES
+from .sigma import SigmaRuleError, export_sigma, import_sigma
 from .security import (
     MAX_EVENTS_PER_INGEST,
     MAX_IN_MEMORY_EVENTS,
@@ -264,6 +265,35 @@ def get_incident(request: Request, incident_id: str):
 @app.get('/api/anomalies')
 def get_anomalies(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
     return [a.to_dict() for a in _page(anomalies(request.state.auth.tenant_id), limit, offset, response)]
+
+
+@app.get('/api/rules/sigma')
+def export_sigma_rules():
+    return PlainTextResponse(
+        export_sigma(get_rules()),
+        media_type='application/yaml',
+        headers={'Content-Disposition': 'attachment; filename=ai-siem-rules.yml'},
+    )
+
+
+@app.post('/api/rules/sigma/import')
+async def import_sigma_rules(request: Request):
+    try:
+        raw = await request.body()
+        imported = import_sigma(raw)
+    except SigmaRuleError as exc:
+        audit_log(request, 'sigma_import', 'rejected', str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing_ids = {str(rule.get('rule_id')) for rule in RULES}
+    duplicate_ids = sorted(
+        rule['rule_id'] for rule in imported if rule['rule_id'] in existing_ids
+    )
+    if duplicate_ids:
+        audit_log(request, 'sigma_import', 'duplicate_rule', ','.join(duplicate_ids))
+        raise HTTPException(status_code=409, detail='Rule already exists')
+    RULES.extend(imported)
+    audit_log(request, 'sigma_import', 'success', f'count={len(imported)}')
+    return {'imported': len(imported), 'rule_ids': [rule['rule_id'] for rule in imported]}
 
 
 @app.get('/api/rules')
