@@ -4,7 +4,7 @@ AI-SIEM is a defensive cybersecurity engineering project that ingests logs, norm
 
 The project now supports **real local log ingestion** through a Linux log agent and **SQLite persistence**. It can still bootstrap with bundled sample logs for first-run demo purposes, but new ingested events are stored in `data/ai_siem.db` and survive backend restarts.
 
-This is not an enterprise SIEM replacement. It is a realistic portfolio lab that demonstrates SOC platform architecture, backend engineering, parser design, detection engineering, API security, and operational thinking.
+This is still not a hyperscale enterprise SIEM replacement. It is a serious defensive engineering foundation and portfolio lab that demonstrates SOC platform architecture, backend engineering, parser design, detection engineering, API security, durable analyst workflows, and operational thinking. The enterprise target architecture and staged roadmap are documented in [`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md).
 
 ## Architecture
 
@@ -33,8 +33,11 @@ flowchart LR
 - SQLite event persistence in `data/ai_siem.db` by default.
 - Real log tailing agent for Linux auth logs and web access logs.
 - Ingest limits for request size, log size, and total loaded events.
-- Simple in-memory per-IP rate limiting.
-- Audit logging to `logs/audit.log` without logging secrets.
+- Thread-safe, bounded in-memory per-IP rate limiting; proxy headers are ignored unless `AI_SIEM_TRUST_PROXY_HEADERS=true`.
+- Request IDs on API responses and audit records.
+- Bounded pagination on event, alert, incident, anomaly, and triage list endpoints using `limit` and `offset`.
+- SQLite WAL mode, busy timeout, and durable analyst triage records.
+- Audit logging to `logs/audit.log` with control-character escaping and without logging secrets.
 - Parser statistics for unknown/unsupported formats.
 - Rule-based detections mapped to MITRE ATT&CK tactics and techniques.
 - MITRE ATT&CK coverage summary for implemented rule metadata.
@@ -66,8 +69,10 @@ set -x AI_SIEM_API_KEY dev-token
 Example:
 
 ```bash
-curl -H "Authorization: Bearer dev-token" http://localhost:8000/api/events
+curl -H "Authorization: Bearer dev-token" "http://localhost:8000/api/events?limit=100&offset=0"
 ```
+
+For a reverse-proxy deployment, only enable `AI_SIEM_TRUST_PROXY_HEADERS=true` when the application is behind a trusted proxy that overwrites `X-Forwarded-For`. Otherwise the service uses the direct socket peer address.
 
 The frontend reads the token from browser localStorage:
 

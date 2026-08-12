@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,7 +27,13 @@ from .security import (
     enforce_auth,
     enforce_rate_limit,
 )
-from .storage import init_db, load_events as load_stored_events, save_events
+from .storage import (
+    init_db,
+    load_events as load_stored_events,
+    load_triage,
+    save_events,
+    save_triage,
+)
 from .storage import stats as storage_stats
 
 AI_SIEM_HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
@@ -35,6 +43,8 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
     'http://localhost:5173',
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
+MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
+DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
 
 app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.3.0')
@@ -50,7 +60,7 @@ app.add_middleware(
     allow_headers=['content-type', 'authorization'],
 )
 
-TRIAGE = []
+TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
 
 
 def _load_sample_events():
@@ -86,21 +96,41 @@ def anomalies():
     return detect_anomalies(EVENTS)
 
 
+def _page(items, limit: int, offset: int, response: Response):
+    if limit < 1 or limit > MAX_PAGE_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f'limit must be between 1 and {MAX_PAGE_LIMIT}',
+        )
+    if offset < 0:
+        raise HTTPException(status_code=400, detail='offset must be non-negative')
+    total = len(items)
+    response.headers['X-Total-Count'] = str(total)
+    response.headers['X-Page-Limit'] = str(limit)
+    response.headers['X-Page-Offset'] = str(offset)
+    next_offset = offset + limit if offset + limit < total else ''
+    response.headers['X-Next-Offset'] = str(next_offset)
+    return items[offset:offset + limit]
+
+
 @app.middleware('http')
 async def security_middleware(request: Request, call_next):
-    if request.method == 'OPTIONS':
-        return await call_next(request)
-
+    request.state.request_id = uuid4().hex
     try:
-        enforce_rate_limit(request)
-        enforce_auth(request)
+        if request.method != 'OPTIONS':
+            enforce_rate_limit(request)
+            enforce_auth(request)
     except HTTPException as exc:
-        return JSONResponse(
+        response = JSONResponse(
             status_code=exc.status_code,
             content={'detail': exc.detail},
         )
+        response.headers['X-Request-ID'] = request.state.request_id
+        return response
 
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers['X-Request-ID'] = request.state.request_id
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -131,11 +161,14 @@ def health():
 
 @app.get('/api/events')
 def get_events(
+    response: Response,
     source: str | None = None,
     event_type: str | None = None,
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
 ):
     data = EVENTS
     if source:
@@ -148,16 +181,19 @@ def get_events(
         data = [e for e in data if e.user == user]
     if src_ip:
         data = [e for e in data if e.src_ip == src_ip]
-    return [e.to_dict() for e in data]
+    return [e.to_dict() for e in _page(data, limit, offset, response)]
 
 
 @app.get('/api/alerts')
 def get_alerts(
+    response: Response,
     severity: str | None = None,
     tactic: str | None = None,
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
 ):
     data = alerts()
     if severity:
@@ -170,17 +206,23 @@ def get_alerts(
         data = [a for a in data if a.user == user]
     if src_ip:
         data = [a for a in data if a.src_ip == src_ip]
-    return [a.to_dict() for a in data]
+    return [a.to_dict() for a in _page(data, limit, offset, response)]
 
 
 @app.get('/api/incidents')
-def get_incidents(status: str | None = None, priority: str | None = None):
+def get_incidents(
+    response: Response,
+    status: str | None = None,
+    priority: str | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
+):
     data = incidents()
     if status:
         data = [i for i in data if i.status == status]
     if priority:
         data = [i for i in data if i.priority == priority]
-    return [i.to_dict() for i in data]
+    return [i.to_dict() for i in _page(data, limit, offset, response)]
 
 
 @app.get('/api/incidents/{incident_id}')
@@ -192,8 +234,8 @@ def get_incident(incident_id: str):
 
 
 @app.get('/api/anomalies')
-def get_anomalies():
-    return [a.to_dict() for a in anomalies()]
+def get_anomalies(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    return [a.to_dict() for a in _page(anomalies(), limit, offset, response)]
 
 
 @app.get('/api/rules')
@@ -292,6 +334,12 @@ async def ingest(request: Request):
     }
 
 
+@app.get('/api/triage')
+def get_triage(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    data = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else list(reversed(TRIAGE))
+    return _page(data, limit, offset, response)
+
+
 @app.post('/api/triage')
 async def triage(request: Request):
     try:
@@ -300,23 +348,32 @@ async def triage(request: Request):
         audit_log(request, 'triage', 'invalid_json')
         raise HTTPException(status_code=400, detail='Invalid JSON body')
 
-    if (
-        not isinstance(payload, dict)
-        or not payload.get('alert_id')
-        or not payload.get('action')
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail='alert_id and action are required',
-        )
+    if not isinstance(payload, dict) or not payload.get('alert_id') or not payload.get('action'):
+        audit_log(request, 'triage', 'invalid_payload')
+        raise HTTPException(status_code=400, detail='alert_id and action are required')
+
+    def bounded_text(name: str, default: str, max_length: int = 256) -> str:
+        value = payload.get(name, default)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f'{name} must be a non-empty string')
+        value = value.strip()
+        if len(value) > max_length:
+            raise HTTPException(status_code=400, detail=f'{name} exceeds {max_length} characters')
+        return value
 
     record = {
-        'alert_id': payload['alert_id'],
-        'action': payload['action'],
-        'analyst': payload.get('analyst', 'frontend'),
+        'alert_id': bounded_text('alert_id', ''),
+        'action': bounded_text('action', ''),
+        'analyst': bounded_text('analyst', 'frontend', 128),
         'status': 'recorded',
+        'request_id': getattr(request.state, 'request_id', None),
+        'created_at': datetime.now(timezone.utc).isoformat(),
     }
-    TRIAGE.append(record)
+    if AI_SIEM_STORAGE == 'sqlite':
+        record = save_triage(record)
+    else:
+        record['triage_id'] = uuid4().hex
+        TRIAGE.append(record)
 
-    audit_log(request, 'triage', 'success', f"alert_id={payload['alert_id']}")
+    audit_log(request, 'triage', 'success', f"alert_id={record['alert_id']}")
     return record

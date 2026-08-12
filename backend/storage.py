@@ -1,9 +1,10 @@
-from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
 from .models import Event
 
 DEFAULT_DB_PATH = Path(os.getenv('AI_SIEM_DB_PATH', 'data/ai_siem.db'))
@@ -26,6 +27,18 @@ CREATE INDEX IF NOT EXISTS idx_events_source_type ON events(source, event_type);
 CREATE INDEX IF NOT EXISTS idx_events_asset ON events(asset);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user);
 CREATE INDEX IF NOT EXISTS idx_events_src_ip ON events(src_ip);
+
+CREATE TABLE IF NOT EXISTS triage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    analyst TEXT NOT NULL,
+    status TEXT NOT NULL,
+    request_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triage_alert_id ON triage(alert_id);
+CREATE INDEX IF NOT EXISTS idx_triage_created_at ON triage(created_at);
 '''
 
 
@@ -36,8 +49,16 @@ def _db_path(path: str | Path | None = None) -> Path:
 
 
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path(path))
+    conn = sqlite3.connect(
+        _db_path(path),
+        timeout=10,
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout=10000')
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 
@@ -87,19 +108,92 @@ def load_events(path: str | Path | None = None, limit: int | None = None) -> lis
         query += ' LIMIT ?'
         params = (limit,)
     with connect(path) as conn:
-        return [Event.from_dict(json.loads(row['event_json'])) for row in conn.execute(query, params)]
+        return [
+            Event.from_dict(json.loads(row['event_json']))
+            for row in conn.execute(query, params)
+        ]
+
+
+def save_triage(record: dict, path: str | Path | None = None) -> dict:
+    init_db(path)
+    created_at = record.get('created_at') or datetime.now(timezone.utc).isoformat()
+    values = (
+        str(record['alert_id']),
+        str(record['action']),
+        str(record.get('analyst') or 'unknown'),
+        str(record.get('status') or 'recorded'),
+        str(record.get('request_id') or ''),
+        created_at,
+    )
+    with connect(path) as conn:
+        cursor = conn.execute(
+            '''
+            INSERT INTO triage (alert_id, action, analyst, status, request_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            values,
+        )
+        conn.commit()
+        return {
+            'triage_id': cursor.lastrowid,
+            'alert_id': values[0],
+            'action': values[1],
+            'analyst': values[2],
+            'status': values[3],
+            'request_id': values[4] or None,
+            'created_at': values[5],
+        }
+
+
+def load_triage(
+    path: str | Path | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    init_db(path)
+    query = '''
+        SELECT id, alert_id, action, analyst, status, request_id, created_at
+        FROM triage
+        ORDER BY id DESC
+    '''
+    params: list[int] = []
+    if limit is not None:
+        query += ' LIMIT ? OFFSET ?'
+        params.extend([limit, max(offset, 0)])
+    with connect(path) as conn:
+        return [
+            {
+                'triage_id': row['id'],
+                'alert_id': row['alert_id'],
+                'action': row['action'],
+                'analyst': row['analyst'],
+                'status': row['status'],
+                'request_id': row['request_id'] or None,
+                'created_at': row['created_at'],
+            }
+            for row in conn.execute(query, tuple(params))
+        ]
 
 
 def stats(path: str | Path | None = None) -> dict:
     init_db(path)
     with connect(path) as conn:
         total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
-        sources = {row['source']: row['count'] for row in conn.execute('SELECT source, COUNT(*) count FROM events GROUP BY source')}
-        last = conn.execute('SELECT timestamp FROM events ORDER BY timestamp DESC LIMIT 1').fetchone()
+        triage_total = conn.execute('SELECT COUNT(*) FROM triage').fetchone()[0]
+        sources = {
+            row['source']: row['count']
+            for row in conn.execute(
+                'SELECT source, COUNT(*) count FROM events GROUP BY source'
+            )
+        }
+        last = conn.execute(
+            'SELECT timestamp FROM events ORDER BY timestamp DESC LIMIT 1'
+        ).fetchone()
     return {
         'backend': 'sqlite',
         'db_path': str(_db_path(path)),
         'stored_events': total,
+        'stored_triage_records': triage_total,
         'source_distribution': sources,
         'last_event_timestamp': last['timestamp'] if last else None,
     }
