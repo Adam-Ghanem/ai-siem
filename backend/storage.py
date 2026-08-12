@@ -55,6 +55,29 @@ CREATE TABLE IF NOT EXISTS triage (
     principal_id TEXT NOT NULL DEFAULT 'legacy-admin'
 );
 CREATE INDEX IF NOT EXISTS idx_triage_alert_id ON triage(alert_id);
+
+CREATE TABLE IF NOT EXISTS alert_acknowledgements (
+    alert_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL,
+    comment TEXT,
+    request_id TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_ack_tenant_updated ON alert_acknowledgements(tenant_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS analyst_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id TEXT NOT NULL,
+    note TEXT NOT NULL,
+    analyst TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    request_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analyst_notes_tenant_alert ON analyst_notes(tenant_id, alert_id, id DESC);
 '''
 
 
@@ -280,6 +303,112 @@ def load_triage(
                 'created_at': row['created_at'],
                 'tenant_id': row['tenant_id'],
                 'principal_id': row['principal_id'],
+            }
+            for row in conn.execute(query, tuple(params))
+        ]
+
+
+def save_alert_acknowledgement(record: dict, path: str | Path | None = None) -> dict:
+    init_db(path)
+    values = (
+        str(record['alert_id']),
+        str(record.get('tenant_id') or 'default'),
+        str(record.get('principal_id') or 'legacy-admin'),
+        1 if bool(record.get('acknowledged')) else 0,
+        str(record.get('comment') or '') or None,
+        str(record.get('request_id') or '') or None,
+        str(record.get('updated_at') or datetime.now(timezone.utc).isoformat()),
+    )
+    with connect(path) as conn:
+        conn.execute('''
+            INSERT INTO alert_acknowledgements
+            (alert_id, tenant_id, principal_id, acknowledged, comment, request_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(alert_id) DO UPDATE SET
+                tenant_id=excluded.tenant_id, principal_id=excluded.principal_id,
+                acknowledged=excluded.acknowledged, comment=excluded.comment,
+                request_id=excluded.request_id, updated_at=excluded.updated_at
+        ''', values)
+        conn.commit()
+    return {
+        'alert_id': values[0], 'tenant_id': values[1], 'principal_id': values[2],
+        'acknowledged': bool(values[3]), 'comment': values[4], 'request_id': values[5],
+        'updated_at': values[6],
+    }
+
+
+def load_alert_acknowledgements(
+    path: str | Path | None = None,
+    tenant_id: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    init_db(path)
+    query = '''SELECT alert_id, tenant_id, principal_id, acknowledged, comment, request_id, updated_at
+               FROM alert_acknowledgements'''
+    params: list[object] = []
+    if tenant_id:
+        query += ' WHERE tenant_id = ?'
+        params.append(tenant_id)
+    query += ' ORDER BY updated_at DESC'
+    if limit is not None:
+        query += ' LIMIT ? OFFSET ?'
+        params.extend([limit, max(offset, 0)])
+    with connect(path) as conn:
+        return [
+            {**dict(row), 'acknowledged': bool(row['acknowledged'])}
+            for row in conn.execute(query, tuple(params))
+        ]
+
+
+def save_analyst_note(record: dict, path: str | Path | None = None) -> dict:
+    init_db(path)
+    values = (
+        str(record['alert_id']), str(record['note']), str(record.get('analyst') or 'unknown'),
+        str(record.get('tenant_id') or 'default'), str(record.get('principal_id') or 'legacy-admin'),
+        str(record.get('request_id') or '') or None,
+        str(record.get('created_at') or datetime.now(timezone.utc).isoformat()),
+    )
+    with connect(path) as conn:
+        cursor = conn.execute('''
+            INSERT INTO analyst_notes
+            (alert_id, note, analyst, tenant_id, principal_id, request_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', values)
+        conn.commit()
+        note_id = cursor.lastrowid
+    return {
+        'note_id': note_id, 'alert_id': values[0], 'note': values[1], 'analyst': values[2],
+        'tenant_id': values[3], 'principal_id': values[4], 'request_id': values[5],
+        'created_at': values[6],
+    }
+
+
+def load_analyst_notes(
+    alert_id: str,
+    path: str | Path | None = None,
+    tenant_id: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    init_db(path)
+    query = '''SELECT id, alert_id, note, analyst, tenant_id, principal_id, request_id, created_at
+               FROM analyst_notes WHERE alert_id = ?'''
+    params: list[object] = [alert_id]
+    if tenant_id:
+        query += ' AND tenant_id = ?'
+        params.append(tenant_id)
+    query += ' ORDER BY id DESC'
+    if limit is not None:
+        query += ' LIMIT ? OFFSET ?'
+        params.extend([limit, max(offset, 0)])
+    with connect(path) as conn:
+        return [
+            {
+                'note_id': row['id'], 'alert_id': row['alert_id'], 'note': row['note'],
+                'analyst': row['analyst'], 'tenant_id': row['tenant_id'],
+                'principal_id': row['principal_id'], 'request_id': row['request_id'],
+                'created_at': row['created_at'],
             }
             for row in conn.execute(query, tuple(params))
         ]

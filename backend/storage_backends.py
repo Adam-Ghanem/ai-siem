@@ -16,6 +16,10 @@ from .storage import (
     save_ingest_batch as sqlite_save_ingest_batch,
     save_triage as sqlite_save_triage,
     stats as sqlite_stats,
+    load_alert_acknowledgements as sqlite_load_alert_acknowledgements,
+    save_alert_acknowledgement as sqlite_save_alert_acknowledgement,
+    load_analyst_notes as sqlite_load_analyst_notes,
+    save_analyst_note as sqlite_save_analyst_note,
 )
 
 
@@ -29,6 +33,10 @@ class StorageBackend(Protocol):
     def load_triage(self, limit: int | None = None, offset: int = 0, tenant_id: str | None = None) -> list[dict]: ...
     def save_triage(self, record: dict) -> dict: ...
     def stats(self, tenant_id: str | None = None) -> dict: ...
+    def load_alert_acknowledgements(self, tenant_id: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict]: ...
+    def save_alert_acknowledgement(self, record: dict) -> dict: ...
+    def load_analyst_notes(self, alert_id: str, tenant_id: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict]: ...
+    def save_analyst_note(self, record: dict) -> dict: ...
 
 
 class MemoryBackend:
@@ -38,6 +46,8 @@ class MemoryBackend:
         self.events: list[Event] = []
         self.batches: list[dict] = []
         self.triage: list[dict] = []
+        self.acknowledgements: dict[tuple[str, str], dict] = {}
+        self.notes: list[dict] = []
 
     def load_events(self, limit: int | None = None, tenant_id: str | None = None) -> list[Event]:
         values = [event for event in self.events if not tenant_id or event.tenant_id == tenant_id]
@@ -64,6 +74,25 @@ class MemoryBackend:
         value = dict(record)
         value.setdefault('triage_id', len(self.triage) + 1)
         self.triage.append(value)
+        return value
+
+    def load_alert_acknowledgements(self, tenant_id=None, limit=None, offset=0):
+        values = [record for (tenant, _), record in self.acknowledgements.items() if not tenant_id or tenant == tenant_id]
+        values = list(reversed(values))
+        return values[offset:offset + limit] if limit is not None else values[offset:]
+
+    def save_alert_acknowledgement(self, record):
+        value = dict(record)
+        self.acknowledgements[(value['tenant_id'], value['alert_id'])] = value
+        return value
+
+    def load_analyst_notes(self, alert_id, tenant_id=None, limit=None, offset=0):
+        values = [record for record in reversed(self.notes) if record.get('alert_id') == alert_id and (not tenant_id or record.get('tenant_id') == tenant_id)]
+        return values[offset:offset + limit] if limit is not None else values[offset:]
+
+    def save_analyst_note(self, record):
+        value = {**record, 'note_id': len(self.notes) + 1}
+        self.notes.append(value)
         return value
 
     def stats(self, tenant_id: str | None = None) -> dict:
@@ -103,6 +132,18 @@ class SQLiteBackend:
 
     def stats(self, tenant_id=None):
         return sqlite_stats(tenant_id=tenant_id)
+
+    def load_alert_acknowledgements(self, tenant_id=None, limit=None, offset=0):
+        return sqlite_load_alert_acknowledgements(tenant_id=tenant_id, limit=limit, offset=offset)
+
+    def save_alert_acknowledgement(self, record):
+        return sqlite_save_alert_acknowledgement(record)
+
+    def load_analyst_notes(self, alert_id, tenant_id=None, limit=None, offset=0):
+        return sqlite_load_analyst_notes(alert_id, tenant_id=tenant_id, limit=limit, offset=offset)
+
+    def save_analyst_note(self, record):
+        return sqlite_save_analyst_note(record)
 
 
 class PostgreSQLBackend:
@@ -148,6 +189,16 @@ class PostgreSQLBackend:
                 )
             ''')
             conn.execute('CREATE INDEX IF NOT EXISTS ai_siem_triage_tenant_id ON ai_siem_triage(tenant_id, id DESC)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS ai_siem_alert_acknowledgements (
+                alert_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+                acknowledged BOOLEAN NOT NULL, comment TEXT, request_id TEXT, updated_at TIMESTAMPTZ NOT NULL
+            )''')
+            conn.execute('CREATE INDEX IF NOT EXISTS ai_siem_ack_tenant_updated ON ai_siem_alert_acknowledgements(tenant_id, updated_at DESC)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS ai_siem_analyst_notes (
+                id BIGSERIAL PRIMARY KEY, alert_id TEXT NOT NULL, note TEXT NOT NULL, analyst TEXT NOT NULL,
+                tenant_id TEXT NOT NULL, principal_id TEXT NOT NULL, request_id TEXT, created_at TIMESTAMPTZ NOT NULL
+            )''')
+            conn.execute('CREATE INDEX IF NOT EXISTS ai_siem_notes_tenant_alert ON ai_siem_analyst_notes(tenant_id, alert_id, id DESC)')
 
     def load_events(self, limit=None, tenant_id=None):
         query = 'SELECT event_json FROM ai_siem_events'
@@ -233,11 +284,55 @@ class PostgreSQLBackend:
             }
 
 
+    def load_alert_acknowledgements(self, tenant_id=None, limit=None, offset=0):
+        query = 'SELECT alert_id, tenant_id, principal_id, acknowledged, comment, request_id, updated_at FROM ai_siem_alert_acknowledgements'
+        params = []
+        if tenant_id:
+            query += ' WHERE tenant_id = %s'
+            params.append(tenant_id)
+        query += ' ORDER BY updated_at DESC LIMIT %s OFFSET %s'
+        params.extend([limit or 1000, max(offset, 0)])
+        with self._connect() as conn:
+            return [dict(zip(('alert_id', 'tenant_id', 'principal_id', 'acknowledged', 'comment', 'request_id', 'updated_at'), row)) for row in conn.execute(query, params)]
+
+    def save_alert_acknowledgement(self, record):
+        value = {**record, 'acknowledged': bool(record.get('acknowledged'))}
+        with self._connect() as conn:
+            conn.execute('''INSERT INTO ai_siem_alert_acknowledgements(alert_id, tenant_id, principal_id, acknowledged, comment, request_id, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(alert_id) DO UPDATE SET tenant_id=EXCLUDED.tenant_id, principal_id=EXCLUDED.principal_id,
+                acknowledged=EXCLUDED.acknowledged, comment=EXCLUDED.comment, request_id=EXCLUDED.request_id, updated_at=EXCLUDED.updated_at''',
+                (value['alert_id'], value['tenant_id'], value['principal_id'], value['acknowledged'], value.get('comment'), value.get('request_id'), value['updated_at']))
+        return value
+
+    def load_analyst_notes(self, alert_id, tenant_id=None, limit=None, offset=0):
+        query = 'SELECT id, alert_id, note, analyst, tenant_id, principal_id, request_id, created_at FROM ai_siem_analyst_notes WHERE alert_id = %s'
+        params = [alert_id]
+        if tenant_id:
+            query += ' AND tenant_id = %s'
+            params.append(tenant_id)
+        query += ' ORDER BY id DESC LIMIT %s OFFSET %s'
+        params.extend([limit or 1000, max(offset, 0)])
+        with self._connect() as conn:
+            return [dict(zip(('note_id', 'alert_id', 'note', 'analyst', 'tenant_id', 'principal_id', 'request_id', 'created_at'), row)) for row in conn.execute(query, params)]
+
+    def save_analyst_note(self, record):
+        value = dict(record)
+        with self._connect() as conn:
+            row = conn.execute('''INSERT INTO ai_siem_analyst_notes(alert_id, note, analyst, tenant_id, principal_id, request_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id''',
+                (value['alert_id'], value['note'], value['analyst'], value['tenant_id'], value['principal_id'], value.get('request_id'), value['created_at'])).fetchone()
+        value['note_id'] = row[0]
+        return value
+
+
 class OpenSearchBackend:
     name = 'opensearch'
     EVENTS_INDEX = 'ai-siem-events'
     TRIAGE_INDEX = 'ai-siem-triage'
     BATCHES_INDEX = 'ai-siem-batches'
+    ACK_INDEX = 'ai-siem-alert-acknowledgements'
+    NOTES_INDEX = 'ai-siem-analyst-notes'
 
     def __init__(self, url: str | None = None) -> None:
         try:
@@ -285,6 +380,26 @@ class OpenSearchBackend:
             body = {'query': {'term': {'tenant_id.keyword': tenant_id}}} if tenant_id else {'query': {'match_all': {}}}
             return int(self.client.count(index=index, body=body).get('count', 0))
         return {'backend': self.name, 'tenant_id': tenant_id, 'stored_events': count(self.EVENTS_INDEX), 'stored_triage_records': count(self.TRIAGE_INDEX), 'stored_ingest_batches': count(self.BATCHES_INDEX)}
+
+    def load_alert_acknowledgements(self, tenant_id=None, limit=None, offset=0):
+        return [hit['_source'] for hit in self._search(self.ACK_INDEX, tenant_id, limit, offset, 'updated_at')]
+
+    def save_alert_acknowledgement(self, record):
+        value = {**record, 'acknowledged': bool(record.get('acknowledged'))}
+        self.client.index(index=self.ACK_INDEX, id=f"{value['tenant_id']}:{value['alert_id']}", body=value, refresh=False)
+        return value
+
+    def load_analyst_notes(self, alert_id, tenant_id=None, limit=None, offset=0):
+        filters = [{'term': {'alert_id.keyword': alert_id}}]
+        if tenant_id:
+            filters.append({'term': {'tenant_id.keyword': tenant_id}})
+        body = {'from': max(offset, 0), 'size': min(limit or 1000, 1000), 'sort': [{'created_at': 'desc'}], 'query': {'bool': {'filter': filters}}}
+        return [hit['_source'] for hit in self.client.search(index=self.NOTES_INDEX, body=body).get('hits', {}).get('hits', [])]
+
+    def save_analyst_note(self, record):
+        value = {**record, 'note_id': record.get('note_id') or uuid4().hex}
+        self.client.index(index=self.NOTES_INDEX, id=str(value['note_id']), body=value, refresh=False)
+        return value
 
 
 def build_storage_backend(name: str | None = None) -> StorageBackend:

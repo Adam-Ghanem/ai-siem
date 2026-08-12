@@ -233,6 +233,87 @@ def get_alerts(
     return [a.to_dict() for a in _page(data, limit, offset, response)]
 
 
+def _bounded_alert_id(alert_id: str) -> str:
+    value = str(alert_id or '').strip()
+    if not value or len(value) > 128 or any(char in value for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='Invalid alert_id')
+    return value
+
+
+def _alert_exists(alert_id: str, tenant_id: str) -> bool:
+    return any(alert.alert_id == alert_id for alert in alerts(tenant_id))
+
+
+@app.get('/api/alerts/acknowledgements')
+def get_alert_acknowledgements(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    data = STORAGE.load_alert_acknowledgements(tenant_id=request.state.auth.tenant_id, limit=10000, offset=0)
+    return _page(data, limit, offset, response)
+
+
+@app.post('/api/alerts/{alert_id}/acknowledge')
+async def acknowledge_alert(request: Request, alert_id: str):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get('acknowledged'), bool):
+        raise HTTPException(status_code=400, detail='acknowledged must be boolean')
+    comment = payload.get('comment', '')
+    if not isinstance(comment, str) or len(comment) > 2048 or any(char in comment for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='comment is invalid or too large')
+    record = STORAGE.save_alert_acknowledgement({
+        'alert_id': alert_id,
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
+        'acknowledged': payload['acknowledged'],
+        'comment': comment.strip() or None,
+        'request_id': getattr(request.state, 'request_id', None),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
+    audit_log(request, 'alert_acknowledgement', 'success', f'alert_id={alert_id}')
+    return record
+
+
+@app.get('/api/alerts/{alert_id}/notes')
+def get_alert_notes(request: Request, response: Response, alert_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    data = STORAGE.load_analyst_notes(alert_id, tenant_id=request.state.auth.tenant_id, limit=10000, offset=0)
+    return _page(data, limit, offset, response)
+
+
+@app.post('/api/alerts/{alert_id}/notes')
+async def add_alert_note(request: Request, alert_id: str):
+    alert_id = _bounded_alert_id(alert_id)
+    if not _alert_exists(alert_id, request.state.auth.tenant_id):
+        raise HTTPException(status_code=404, detail='Alert not found')
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail='Invalid JSON body') from exc
+    note = payload.get('note') if isinstance(payload, dict) else None
+    analyst = payload.get('analyst', 'unknown') if isinstance(payload, dict) else 'unknown'
+    if not isinstance(note, str) or not note.strip() or len(note) > 4096 or any(char in note for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='note is required, single-line, and at most 4096 characters')
+    if not isinstance(analyst, str) or not analyst.strip() or len(analyst) > 128 or any(char in analyst for char in '\r\n\x00'):
+        raise HTTPException(status_code=400, detail='analyst is invalid')
+    record = STORAGE.save_analyst_note({
+        'alert_id': alert_id,
+        'note': note.strip(),
+        'analyst': analyst.strip(),
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
+        'request_id': getattr(request.state, 'request_id', None),
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    })
+    audit_log(request, 'analyst_note', 'success', f'alert_id={alert_id}')
+    return record
+
+
 @app.get('/api/incidents')
 def get_incidents(
     request: Request,
