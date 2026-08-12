@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: ai-siem
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: AI_SIEM_AUTH_MODE
+        value: jwt
+      - key: AI_SIEM_JWT_SECRET
+        generateValue: true
+      - key: AI_SIEM_JWT_ISSUER
+        value: ai-siem
+      - key: AI_SIEM_JWT_AUDIENCE
+        value: ai-siem-api
+      - key: AI_SIEM_ALLOWED_ORIGIN
+        sync: false
+      - key: AI_SIEM_STORAGE
+        value: sqlite
+      - key: AI_SIEM_DB_PATH
+        value: /var/lib/ai-siem/ai_siem.db
+      - key: ABUSEIPDB_API_KEY
+        sync: false
+      - key: OTX_API_KEY
+        sync: false
+    disk:
+      name: ai-siem-data
+      mountPath: /var/lib/ai-siem
+      sizeGB: 1

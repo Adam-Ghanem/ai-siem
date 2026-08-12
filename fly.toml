@@ -1,0 +1,33 @@
+app = "ai-siem-demo"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  AI_SIEM_HOST = "0.0.0.0"
+  AI_SIEM_PORT = "8000"
+  AI_SIEM_AUTH_MODE = "jwt"
+  AI_SIEM_JWT_ISSUER = "ai-siem"
+  AI_SIEM_JWT_AUDIENCE = "ai-siem-api"
+  AI_SIEM_STORAGE = "sqlite"
+  AI_SIEM_DB_PATH = "/data/ai_siem.db"
+
+[[mounts]]
+  source = "ai_siem_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
