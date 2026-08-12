@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
+from .ingestion import AsyncIngestionPipeline
 from .detection import run_detections
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
@@ -65,6 +66,7 @@ app.add_middleware(
 
 TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
 INGEST_BATCHES = load_ingest_batches(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
+INGESTION_PIPELINE = AsyncIngestionPipeline(storage_enabled=AI_SIEM_STORAGE == 'sqlite')
 
 
 def _load_sample_events():
@@ -367,7 +369,8 @@ async def ingest(request: Request):
     items = _extract_items(payload, tenant_id)
     before_stats = parser_stats()
     try:
-        parsed = parse_events(items)
+        result = await INGESTION_PIPELINE.process(items, tenant_id)
+        parsed = result.events
     except ValueError as exc:
         _record_ingest_batch({
             'batch_id': batch_id,
@@ -381,14 +384,7 @@ async def ingest(request: Request):
         })
         audit_log(request, 'ingest', 'parse_failed', f'batch_id={batch_id}')
         raise
-    for event in parsed:
-        event.tenant_id = tenant_id
-        if tenant_id != 'default' and not event.id.startswith(f'{tenant_id}:'):
-            event.id = f'{tenant_id}:{event.id}'
     EVENTS.extend(parsed)
-
-    if AI_SIEM_STORAGE == 'sqlite':
-        save_events(parsed)
 
     after_stats = parser_stats()
     unknown_count = after_stats['unknown_events'] - before_stats['unknown_events']
