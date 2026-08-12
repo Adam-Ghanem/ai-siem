@@ -77,7 +77,7 @@ The repository's current single-process flow maps onto the middle of this design
 | Release | Scope | Exit criteria |
 |---|---|---|
 | R1: Enterprise hardening | Request IDs, bounded pagination, secure audit logging, thread-safe rate limits, durable triage, SQLite WAL/busy timeout, stable event validation, regression tests, and operational documentation. | All tests pass; security scanners pass; API responses expose pagination metadata; analyst triage survives restart; no secret or newline injection in audit logs. |
-| R2: Multi-tenant and identity | OIDC/OAuth2 integration, tenant-aware storage, RBAC roles, per-tenant quotas, key rotation, and audit search. | Every protected operation has a tenant and principal; authorization tests cover analyst, responder, and admin roles. |
+| R2: Multi-tenant and identity | **Implemented foundation:** configurable token-to-principal mapping through `AI_SIEM_PRINCIPALS`, tenant-aware event/triage storage, tenant-scoped reads and analytics, RBAC roles, authenticated `/api/me`, and authorization audit records. **Next:** OIDC/OAuth2, per-tenant quotas, key rotation, and audit search. | Every protected operation has a tenant and principal; tenant isolation and reader/ingestor/analyst authorization tests pass. OIDC and centralized secret rotation remain follow-on work. |
 | R3: Streaming ingestion | Collector registration, syslog/HTTP connectors, durable queue, retry policy, dead-letter queue, backpressure, and replay. | Ingestion can resume after worker restart without losing acknowledged events; poison messages are isolated. |
 | R4: Enterprise analytics | Search index, time-range queries, detection scheduling, deduplication, suppression policies, threat-intelligence enrichment, and data retention. | Query latency and ingestion throughput are measured against an agreed workload; rules are versioned and explainable. |
 | R5: AI analyst layer | Retrieval-grounded investigation summaries, alert clustering, entity risk scoring, natural-language search translated to reviewed queries, and evaluation datasets. | AI outputs cite evidence, are reproducible enough for audit, have confidence/abstention behavior, and cannot trigger irreversible response without policy approval. |
@@ -92,11 +92,23 @@ The repository's current single-process flow maps onto the middle of this design
 | Audit integrity | Audit detail is concatenated into a line without sanitization; attacker-controlled values can forge log lines. | P0 |
 | Rate limiting | In-memory buckets are not bounded, are not synchronized, and trust `X-Forwarded-For` from any caller. | P0 |
 | Persistence | SQLite does not enable WAL/busy timeout; per-request initialization and writes are not prepared for concurrent workers. | P1 |
-| Authentication | A single static bearer token provides no principal, role, tenant, rotation, or revocation model. | P1 |
+| Authentication | The default legacy token remains a local-development convenience; multi-tenant principals and roles are now configurable, but OIDC/OAuth2, revocation, rotation, and centralized secret management are still pending. | P1 |
 | Event contract | Validation is permissive, invalid timestamps silently become `now`, and the schema lacks tenant, ingestion, trace, and integrity metadata. | P1 |
 | Detection architecture | The repository has deterministic rules and statistical heuristics, but no real model lifecycle, feature store, evaluation set, or AI evidence contract. | P1 |
 | Response safety | Workflow YAML exists, but there is no approval gate, idempotency key, connector isolation, or durable execution record. | P1 |
 | Deployment | A single process and SQLite are appropriate for a demo or small lab, not for a large enterprise's volume or availability objectives. | P2 |
+
+## Release 2 Identity Contract
+
+The current identity layer accepts either the legacy `AI_SIEM_API_KEY` or a JSON mapping in `AI_SIEM_PRINCIPALS`. Each configured token resolves to a `principal_id`, `tenant_id`, and one or more roles. The API derives tenant scope from that authenticated context and does not accept a client-supplied tenant selector. This is a useful intermediate control for a lab or controlled deployment; a large enterprise should replace shared static bearer secrets with OIDC/OAuth2, short-lived credentials, rotation, revocation, and a centralized policy decision point.
+
+| Role | Read SOC data | Ingest events | Write triage |
+|---|---:|---:|---:|
+| `admin` | Yes | Yes | Yes |
+| `reader` | Yes | No | No |
+| `analyst` | Yes | No | Yes |
+| `responder` | Yes | No | Yes |
+| `ingestor` | Yes | Yes | No |
 
 ## AI-Specific Guardrails
 

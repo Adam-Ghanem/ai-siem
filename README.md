@@ -28,7 +28,7 @@ flowchart LR
 ## Main features
 
 - FastAPI backend with SOC-focused endpoints.
-- Bearer-token API authentication with `AI_SIEM_API_KEY`.
+- Bearer-token authentication with legacy `AI_SIEM_API_KEY` support and configurable multi-tenant principals/RBAC.
 - CORS support for the dashboard, including browser preflight requests.
 - SQLite event persistence in `data/ai_siem.db` by default.
 - Real log tailing agent for Linux auth logs and web access logs.
@@ -54,11 +54,19 @@ All endpoints except `GET /api/health` require:
 Authorization: Bearer <token>
 ```
 
-Set the key before running the backend:
+For local development, the legacy single-admin token remains supported:
 
 ```bash
 export AI_SIEM_API_KEY='dev-token'
 ```
+
+For multi-tenant deployments, use explicit principal configuration instead of sharing one token. The value below is an example only; inject real secrets through the deployment secret manager and never commit them:
+
+```bash
+export AI_SIEM_PRINCIPALS='{"token-for-tenant-a":{"principal_id":"soc-a","tenant_id":"tenant-a","roles":["analyst","ingestor"]},"reader-token-a":{"principal_id":"reader-a","tenant_id":"tenant-a","roles":["reader"]}}'
+```
+
+Supported roles are `admin`, `reader`, `analyst`, `responder`, and `ingestor`. Every authenticated request has a principal and tenant context. Events, alerts, incidents, metrics, storage statistics, and triage records are filtered by the authenticated tenant; clients cannot select another tenant through a query parameter. `POST /api/ingest` requires `admin` or `ingestor`, while `POST /api/triage` requires `admin`, `analyst`, or `responder`. Use `GET /api/me` to inspect the current principal context.
 
 Fish shell:
 
@@ -217,7 +225,9 @@ Then refresh the dashboard and check Events, Alerts, Metrics, and Storage stats.
 | `GET` | `/api/parser/stats` | required | Parser visibility stats |
 | `GET` | `/api/storage/stats` | required | SQLite storage statistics |
 | `POST` | `/api/ingest` | required | Ingest events/logs |
-| `POST` | `/api/triage` | required | Record analyst triage |
+| `POST` | `/api/triage` | required + analyst/responder/admin | Record analyst triage. |
+| `GET` | `/api/me` | required | Return principal, tenant, and roles for the authenticated token. |
+| `GET` | `/api/ingest/batches` | required | Tenant-scoped ingestion lifecycle history. |
 
 ## Detection coverage
 

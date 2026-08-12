@@ -5,8 +5,8 @@ AI-SIEM is designed as a lightweight full-stack SOC/SIEM platform.
 ## Components
 
 - **Frontend**: static HTML/CSS/JavaScript dashboard.
-- **Backend**: FastAPI service with protected API endpoints, request IDs, bounded pagination, and health checks.
-- **Data Layer**: SQLite persistence with WAL mode for normalized events and durable analyst triage; bundled JSON logs are only first-run demo input.
+- **Backend**: FastAPI service with protected API endpoints, request IDs, bounded pagination, tenant context, RBAC authorization, and health checks.
+- **Data Layer**: SQLite persistence with WAL mode for tenant-scoped normalized events, durable ingestion batches, and analyst triage; bundled JSON logs are only first-run demo input.
 - **Detection Content**: Rule metadata mapped to MITRE ATT&CK tactics and techniques, plus explainable statistical anomaly heuristics.
 - **Parsers**: source-specific parser metadata.
 - **Dashboards**: dashboard metadata definitions.
@@ -16,9 +16,10 @@ AI-SIEM is designed as a lightweight full-stack SOC/SIEM platform.
 
 ```text
 collectors / JSON API
-  -> bounded ingestion gateway
+  -> authenticated principal and tenant context
+  -> bounded ingestion gateway and batch ledger
   -> parser and normalized event model
-  -> SQLite event store
+  -> tenant-scoped SQLite event store
   -> detection and anomaly engines
   -> alerts and incident correlation
   -> durable triage API

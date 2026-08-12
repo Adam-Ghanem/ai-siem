@@ -25,13 +25,16 @@ from .security import (
     MAX_RAW_LOG_BYTES,
     audit_log,
     enforce_auth,
+    enforce_permission,
     enforce_rate_limit,
 )
 from .storage import (
     init_db,
     load_events as load_stored_events,
+    load_ingest_batches,
     load_triage,
     save_events,
+    save_ingest_batch,
     save_triage,
 )
 from .storage import stats as storage_stats
@@ -61,11 +64,15 @@ app.add_middleware(
 )
 
 TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
+INGEST_BATCHES = load_ingest_batches(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
 
 
 def _load_sample_events():
     if DATA_FILE.exists():
-        return parse_events(json.loads(DATA_FILE.read_text(encoding='utf-8')))
+        events = parse_events(json.loads(DATA_FILE.read_text(encoding='utf-8')))
+        for event in events:
+            event.tenant_id = 'default'
+        return events
     return []
 
 
@@ -84,16 +91,27 @@ def load_events():
 EVENTS = load_events()
 
 
-def alerts():
-    return run_detections(EVENTS)
+def _record_ingest_batch(record: dict) -> dict:
+    if AI_SIEM_STORAGE == 'sqlite':
+        return save_ingest_batch(record)
+    INGEST_BATCHES.append(record)
+    return record
 
 
-def incidents():
-    return correlate(alerts())
+def tenant_events(tenant_id: str) -> list:
+    return [event for event in EVENTS if event.tenant_id == tenant_id]
 
 
-def anomalies():
-    return detect_anomalies(EVENTS)
+def alerts(tenant_id: str | None = None):
+    return run_detections(tenant_events(tenant_id) if tenant_id else EVENTS)
+
+
+def incidents(tenant_id: str | None = None):
+    return correlate(alerts(tenant_id))
+
+
+def anomalies(tenant_id: str | None = None):
+    return detect_anomalies(tenant_events(tenant_id) if tenant_id else EVENTS)
 
 
 def _page(items, limit: int, offset: int, response: Response):
@@ -119,7 +137,10 @@ async def security_middleware(request: Request, call_next):
     try:
         if request.method != 'OPTIONS':
             enforce_rate_limit(request)
-            enforce_auth(request)
+            context = enforce_auth(request)
+            request.state.auth = context
+            if context is not None:
+                enforce_permission(request, context)
     except HTTPException as exc:
         response = JSONResponse(
             status_code=exc.status_code,
@@ -128,6 +149,8 @@ async def security_middleware(request: Request, call_next):
         response.headers['X-Request-ID'] = request.state.request_id
         return response
 
+    if not hasattr(request.state, 'auth'):
+        request.state.auth = None
     response = await call_next(request)
     response.headers['X-Request-ID'] = request.state.request_id
     return response
@@ -161,6 +184,7 @@ def health():
 
 @app.get('/api/events')
 def get_events(
+    request: Request,
     response: Response,
     source: str | None = None,
     event_type: str | None = None,
@@ -170,7 +194,7 @@ def get_events(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = EVENTS
+    data = tenant_events(request.state.auth.tenant_id)
     if source:
         data = [e for e in data if e.source == source]
     if event_type:
@@ -186,6 +210,7 @@ def get_events(
 
 @app.get('/api/alerts')
 def get_alerts(
+    request: Request,
     response: Response,
     severity: str | None = None,
     tactic: str | None = None,
@@ -195,7 +220,7 @@ def get_alerts(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = alerts()
+    data = alerts(request.state.auth.tenant_id)
     if severity:
         data = [a for a in data if a.severity == severity]
     if tactic:
@@ -211,13 +236,14 @@ def get_alerts(
 
 @app.get('/api/incidents')
 def get_incidents(
+    request: Request,
     response: Response,
     status: str | None = None,
     priority: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = incidents()
+    data = incidents(request.state.auth.tenant_id)
     if status:
         data = [i for i in data if i.status == status]
     if priority:
@@ -226,16 +252,16 @@ def get_incidents(
 
 
 @app.get('/api/incidents/{incident_id}')
-def get_incident(incident_id: str):
-    for incident in incidents():
+def get_incident(request: Request, incident_id: str):
+    for incident in incidents(request.state.auth.tenant_id):
         if incident.incident_id == incident_id:
             return incident.to_dict()
     raise HTTPException(status_code=404, detail='Incident not found')
 
 
 @app.get('/api/anomalies')
-def get_anomalies(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
-    return [a.to_dict() for a in _page(anomalies(), limit, offset, response)]
+def get_anomalies(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    return [a.to_dict() for a in _page(anomalies(request.state.auth.tenant_id), limit, offset, response)]
 
 
 @app.get('/api/rules')
@@ -249,11 +275,15 @@ def get_attack_coverage():
 
 
 @app.get('/api/metrics')
-def get_metrics():
-    metrics = calculate_metrics(EVENTS, alerts(), incidents())
-    unknown = parser_stats()['unknown_events']
+def get_metrics(request: Request):
+    events = tenant_events(request.state.auth.tenant_id)
+    tenant_alerts = alerts(request.state.auth.tenant_id)
+    tenant_incidents = incidents(request.state.auth.tenant_id)
+    metrics = calculate_metrics(events, tenant_alerts, tenant_incidents)
+    unknown = sum(1 for event in events if event.source == 'unknown')
     metrics['parsing_failed_events'] = unknown
-    metrics['unknown_event_rate_pct'] = round((unknown / max(len(EVENTS), 1)) * 100, 2)
+    metrics['unknown_event_rate_pct'] = round((unknown / max(len(events), 1)) * 100, 2)
+    metrics['tenant_id'] = request.state.auth.tenant_id
     return metrics
 
 
@@ -263,13 +293,20 @@ def get_parser_stats():
 
 
 @app.get('/api/storage/stats')
-def get_storage_stats():
+def get_storage_stats(request: Request):
+    tenant_id = request.state.auth.tenant_id
     if AI_SIEM_STORAGE == 'sqlite':
-        return storage_stats()
-    return {'backend': 'memory', 'stored_events': len(EVENTS)}
+        return storage_stats(tenant_id=tenant_id)
+    return {
+        'backend': 'memory',
+        'tenant_id': tenant_id,
+        'stored_events': len(tenant_events(tenant_id)),
+        'stored_triage_records': len([record for record in TRIAGE if record.get('tenant_id') == tenant_id]),
+        'stored_ingest_batches': len([record for record in INGEST_BATCHES if record.get('tenant_id') == tenant_id]),
+    }
 
 
-def _extract_items(payload: Any):
+def _extract_items(payload: Any, tenant_id: str):
     if isinstance(payload, dict):
         if 'logs' in payload:
             items = payload['logs']
@@ -288,10 +325,10 @@ def _extract_items(payload: Any):
             detail=f'Maximum {MAX_EVENTS_PER_INGEST} events per ingest request',
         )
 
-    if len(EVENTS) + len(items) > MAX_IN_MEMORY_EVENTS:
+    if len(tenant_events(tenant_id)) + len(items) > MAX_IN_MEMORY_EVENTS:
         raise HTTPException(
             status_code=413,
-            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
+            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached for tenant',
         )
 
     for item in items:
@@ -307,36 +344,99 @@ def _extract_items(payload: Any):
 
 @app.post('/api/ingest')
 async def ingest(request: Request):
+    tenant_id = request.state.auth.tenant_id
+    principal_id = request.state.auth.principal_id
+    batch_id = uuid4().hex
+    received_at = datetime.now(timezone.utc).isoformat()
     try:
         payload = await request.json()
     except Exception:
-        audit_log(request, 'ingest', 'invalid_json')
+        _record_ingest_batch({
+            'batch_id': batch_id,
+            'tenant_id': tenant_id,
+            'principal_id': principal_id,
+            'received_at': received_at,
+            'item_count': 0,
+            'rejected_count': 1,
+            'status': 'rejected',
+            'error': 'Invalid JSON body',
+        })
+        audit_log(request, 'ingest', 'invalid_json', f'batch_id={batch_id}')
         raise HTTPException(status_code=400, detail='Invalid JSON body')
 
-    items = _extract_items(payload)
+    items = _extract_items(payload, tenant_id)
     before_stats = parser_stats()
-    parsed = parse_events(items)
+    try:
+        parsed = parse_events(items)
+    except ValueError as exc:
+        _record_ingest_batch({
+            'batch_id': batch_id,
+            'tenant_id': tenant_id,
+            'principal_id': principal_id,
+            'received_at': received_at,
+            'item_count': len(items),
+            'rejected_count': len(items),
+            'status': 'rejected',
+            'error': str(exc),
+        })
+        audit_log(request, 'ingest', 'parse_failed', f'batch_id={batch_id}')
+        raise
+    for event in parsed:
+        event.tenant_id = tenant_id
+        if tenant_id != 'default' and not event.id.startswith(f'{tenant_id}:'):
+            event.id = f'{tenant_id}:{event.id}'
     EVENTS.extend(parsed)
 
     if AI_SIEM_STORAGE == 'sqlite':
         save_events(parsed)
 
     after_stats = parser_stats()
-    audit_log(request, 'ingest', 'success', f'count={len(parsed)}')
+    unknown_count = after_stats['unknown_events'] - before_stats['unknown_events']
+    batch = _record_ingest_batch({
+        'batch_id': batch_id,
+        'tenant_id': tenant_id,
+        'principal_id': principal_id,
+        'received_at': received_at,
+        'item_count': len(items),
+        'accepted_count': len(parsed),
+        'rejected_count': 0,
+        'unknown_count': unknown_count,
+        'status': 'accepted_with_unknowns' if unknown_count else 'accepted',
+    })
+    audit_log(request, 'ingest', 'success', f'batch_id={batch_id};count={len(parsed)}')
 
     return {
+        'batch_id': batch['batch_id'],
         'ingested': len(parsed),
-        'total_events': len(EVENTS),
+        'total_events': len(tenant_events(tenant_id)),
         'storage': AI_SIEM_STORAGE,
-        'unknown_events_detected': (
-            after_stats['unknown_events'] - before_stats['unknown_events']
-        ),
+        'unknown_events_detected': unknown_count,
     }
 
 
+@app.get('/api/ingest/batches')
+def get_ingest_batches(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    tenant_id = request.state.auth.tenant_id
+    if AI_SIEM_STORAGE == 'sqlite':
+        data = load_ingest_batches(tenant_id=tenant_id, limit=10000, offset=0)
+    else:
+        data = [record for record in reversed(INGEST_BATCHES) if record.get('tenant_id') == tenant_id]
+    return _page(data, limit, offset, response)
+
+
+@app.get('/api/me')
+def get_me(request: Request):
+    return request.state.auth.to_dict()
+
+
 @app.get('/api/triage')
-def get_triage(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
-    data = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else list(reversed(TRIAGE))
+def get_triage(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
+    tenant_id = request.state.auth.tenant_id
+    data = (
+        load_triage(limit=10000, tenant_id=tenant_id)
+        if AI_SIEM_STORAGE == 'sqlite'
+        else [record for record in reversed(TRIAGE) if record.get('tenant_id') == tenant_id]
+    )
     return _page(data, limit, offset, response)
 
 
@@ -368,6 +468,8 @@ async def triage(request: Request):
         'status': 'recorded',
         'request_id': getattr(request.state, 'request_id', None),
         'created_at': datetime.now(timezone.utc).isoformat(),
+        'tenant_id': request.state.auth.tenant_id,
+        'principal_id': request.state.auth.principal_id,
     }
     if AI_SIEM_STORAGE == 'sqlite':
         record = save_triage(record)
