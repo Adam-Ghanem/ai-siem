@@ -32,16 +32,7 @@ from .security import (
     enforce_permission,
     enforce_rate_limit,
 )
-from .storage import (
-    init_db,
-    load_events as load_stored_events,
-    load_ingest_batches,
-    load_triage,
-    save_events,
-    save_ingest_batch,
-    save_triage,
-)
-from .storage import stats as storage_stats
+from .storage_backends import build_storage_backend
 
 AI_SIEM_HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
 AI_SIEM_PORT = int(os.getenv('AI_SIEM_PORT', '8000'))
@@ -50,6 +41,7 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
     'http://localhost:5173',
 )
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
+STORAGE = build_storage_backend(AI_SIEM_STORAGE)
 MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
 DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
@@ -67,9 +59,12 @@ app.add_middleware(
     allow_headers=['content-type', 'authorization'],
 )
 
-TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
-INGEST_BATCHES = load_ingest_batches(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
-INGESTION_PIPELINE = AsyncIngestionPipeline(storage_enabled=AI_SIEM_STORAGE == 'sqlite')
+TRIAGE = STORAGE.load_triage(limit=10000) if AI_SIEM_STORAGE != 'memory' else []
+INGEST_BATCHES = STORAGE.load_ingest_batches(limit=10000) if AI_SIEM_STORAGE != 'memory' else []
+INGESTION_PIPELINE = AsyncIngestionPipeline(
+    storage_enabled=AI_SIEM_STORAGE != 'memory',
+    persist_callback=STORAGE.save_events,
+)
 
 
 def _load_sample_events():
@@ -82,13 +77,12 @@ def _load_sample_events():
 
 
 def load_events():
-    if AI_SIEM_STORAGE == 'sqlite':
-        init_db()
-        stored = load_stored_events(limit=MAX_IN_MEMORY_EVENTS)
+    if AI_SIEM_STORAGE != 'memory':
+        stored = STORAGE.load_events(limit=MAX_IN_MEMORY_EVENTS)
         if stored:
             return stored
         sample = _load_sample_events()
-        save_events(sample)
+        STORAGE.save_events(sample)
         return sample
     return _load_sample_events()
 
@@ -97,8 +91,8 @@ EVENTS = load_events()
 
 
 def _record_ingest_batch(record: dict) -> dict:
-    if AI_SIEM_STORAGE == 'sqlite':
-        return save_ingest_batch(record)
+    if AI_SIEM_STORAGE != 'memory':
+        return STORAGE.save_ingest_batch(record)
     INGEST_BATCHES.append(record)
     return record
 
@@ -359,8 +353,8 @@ def get_parser_stats():
 @app.get('/api/storage/stats')
 def get_storage_stats(request: Request):
     tenant_id = request.state.auth.tenant_id
-    if AI_SIEM_STORAGE == 'sqlite':
-        return storage_stats(tenant_id=tenant_id)
+    if AI_SIEM_STORAGE != 'memory':
+        return STORAGE.stats(tenant_id=tenant_id)
     return {
         'backend': 'memory',
         'tenant_id': tenant_id,
@@ -475,8 +469,8 @@ async def ingest(request: Request):
 @app.get('/api/ingest/batches')
 def get_ingest_batches(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
     tenant_id = request.state.auth.tenant_id
-    if AI_SIEM_STORAGE == 'sqlite':
-        data = load_ingest_batches(tenant_id=tenant_id, limit=10000, offset=0)
+    if AI_SIEM_STORAGE != 'memory':
+        data = STORAGE.load_ingest_batches(tenant_id=tenant_id, limit=10000, offset=0)
     else:
         data = [record for record in reversed(INGEST_BATCHES) if record.get('tenant_id') == tenant_id]
     return _page(data, limit, offset, response)
@@ -491,8 +485,8 @@ def get_me(request: Request):
 def get_triage(request: Request, response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
     tenant_id = request.state.auth.tenant_id
     data = (
-        load_triage(limit=10000, tenant_id=tenant_id)
-        if AI_SIEM_STORAGE == 'sqlite'
+        STORAGE.load_triage(limit=10000, tenant_id=tenant_id)
+        if AI_SIEM_STORAGE != 'memory'
         else [record for record in reversed(TRIAGE) if record.get('tenant_id') == tenant_id]
     )
     return _page(data, limit, offset, response)
@@ -529,8 +523,8 @@ async def triage(request: Request):
         'tenant_id': request.state.auth.tenant_id,
         'principal_id': request.state.auth.principal_id,
     }
-    if AI_SIEM_STORAGE == 'sqlite':
-        record = save_triage(record)
+    if AI_SIEM_STORAGE != 'memory':
+        record = STORAGE.save_triage(record)
     else:
         record['triage_id'] = uuid4().hex
         TRIAGE.append(record)
