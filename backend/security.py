@@ -4,13 +4,24 @@ import secrets
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Deque
 
 from fastapi import HTTPException, Request
 
+from .jwt_auth import JWTValidationError, verify_hs256
+from .security_types import AuthContext
+
 API_KEY = os.getenv('AI_SIEM_API_KEY', '').strip()
+AUTH_MODE = os.getenv('AI_SIEM_AUTH_MODE', 'legacy').strip().lower() or 'legacy'
+JWT_SECRET = os.getenv('AI_SIEM_JWT_SECRET', '').strip()
+JWT_ISSUER = os.getenv('AI_SIEM_JWT_ISSUER', 'ai-siem').strip() or 'ai-siem'
+JWT_AUDIENCE = os.getenv('AI_SIEM_JWT_AUDIENCE', 'ai-siem-api').strip() or 'ai-siem-api'
+JWT_CLOCK_SKEW_SECONDS = int(os.getenv('AI_SIEM_JWT_CLOCK_SKEW_SECONDS', '30'))
+if AUTH_MODE not in {'legacy', 'hybrid', 'jwt'}:
+    raise RuntimeError('AI_SIEM_AUTH_MODE must be legacy, hybrid, or jwt')
+if AUTH_MODE == 'jwt' and not JWT_SECRET:
+    raise RuntimeError('AI_SIEM_JWT_SECRET is required when AI_SIEM_AUTH_MODE=jwt')
 DEFAULT_TENANT = os.getenv('AI_SIEM_DEFAULT_TENANT', 'default').strip() or 'default'
 DEFAULT_PRINCIPAL = os.getenv('AI_SIEM_DEFAULT_PRINCIPAL', 'legacy-admin').strip() or 'legacy-admin'
 GLOBAL_RATE_LIMIT_PER_MINUTE = int(os.getenv('AI_SIEM_RATE_LIMIT_PER_MINUTE', '60'))
@@ -26,23 +37,6 @@ _GLOBAL_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
 _INGEST_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
 _BUCKET_LOCK = threading.Lock()
 _AUDIT_LOCK = threading.Lock()
-
-
-@dataclass(frozen=True)
-class AuthContext:
-    principal_id: str
-    tenant_id: str
-    roles: frozenset[str]
-
-    def has_any_role(self, *required: str) -> bool:
-        return bool(self.roles.intersection(required))
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            'principal_id': self.principal_id,
-            'tenant_id': self.tenant_id,
-            'roles': sorted(self.roles),
-        }
 
 
 def _load_principals() -> dict[str, AuthContext]:
@@ -153,12 +147,34 @@ def enforce_auth(request: Request) -> AuthContext | None:
         return None
     authorization = request.headers.get('authorization', '')
     scheme, _, token = authorization.partition(' ')
+    if scheme.lower() != 'bearer' or not token:
+        audit_log(request, 'auth', 'failed')
+        raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
+
+    looks_like_jwt = token.count('.') == 2
+    if AUTH_MODE in {'hybrid', 'jwt'} and JWT_SECRET and looks_like_jwt:
+        try:
+            return verify_hs256(
+                token,
+                JWT_SECRET,
+                JWT_ISSUER,
+                JWT_AUDIENCE,
+                JWT_CLOCK_SKEW_SECONDS,
+            )
+        except JWTValidationError as exc:
+            audit_log(request, 'auth', 'jwt_failed', str(exc))
+            raise HTTPException(status_code=401, detail='Missing or invalid bearer token') from exc
+
+    if AUTH_MODE == 'jwt':
+        audit_log(request, 'auth', 'legacy_disabled')
+        raise HTTPException(status_code=401, detail='JWT bearer token required')
+
     context = None
     for candidate, candidate_context in PRINCIPALS.items():
         if secrets.compare_digest(token, candidate):
             context = candidate_context
             break
-    if scheme.lower() != 'bearer' or not token or context is None:
+    if context is None:
         audit_log(request, 'auth', 'failed')
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
     return context
