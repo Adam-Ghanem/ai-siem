@@ -4,9 +4,12 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/license/Adam-Ghanem/ai-siem" alt="License">
+  <img src="https://github.com/Adam-Ghanem/ai-siem/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://img.shields.io/github/stars/Adam-Ghanem/ai-siem" alt="GitHub stars">
   <img src="https://img.shields.io/github/commit-activity/m/Adam-Ghanem/ai-siem" alt="Commit activity">
 </p>
+
+**License: MIT** · **CI: GitHub Actions** · **Defensive security / SOC**
 
 AI-SIEM is a defensive security platform that ingests logs, normalizes events, detects threats, correlates alerts into incidents, calculates SOC metrics, and exposes the results through a **FastAPI backend and lightweight SOC dashboard**.
 
@@ -208,7 +211,7 @@ pip-audit -r requirements.txt
 
 ## 📄 License
 
-AI-SIEM is released under the **MIT License**. See [`LICENSE`](LICENSE) for the full license text.
+**MIT License** — see [`LICENSE`](LICENSE) for the full text.
 
 ## 🔭 Vision
 
