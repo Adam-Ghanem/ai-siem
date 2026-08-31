@@ -214,6 +214,10 @@ def search_event_history(
     offset: int = 0,
 ):
     _validate_page(limit, offset)
+    if q is not None and len(q) > 512:
+        raise HTTPException(status_code=400, detail='q exceeds 512 characters')
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=400, detail='start must not be after end')
 
     if AI_SIEM_STORAGE == 'sqlite':
         results, total = search_stored_events(
