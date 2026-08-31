@@ -30,16 +30,27 @@ class BackendApiTests(unittest.TestCase):
         self.assertGreater(len(response.json()), 0)
 
     def test_event_search_exposes_storage_native_filters_and_pagination(self):
-        sample = main.EVENTS[0]
+        sample = next(event for event in main.EVENTS if event.raw_log)
+        query = sample.raw_log[:20]
+        timestamp = sample.timestamp.isoformat()
         response = self.client.get(
             '/api/search/events',
-            params={'source': sample.source, 'limit': 1, 'offset': 0},
+            params={
+                'source': sample.source,
+                'q': query,
+                'start': timestamp,
+                'end': timestamp,
+                'limit': 1,
+                'offset': 0,
+            },
             headers=AUTH,
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
         self.assertEqual(response.json()[0]['source'], sample.source)
+        self.assertIn(query, response.json()[0]['raw_log'])
+        self.assertEqual(response.json()[0]['timestamp'], timestamp)
         self.assertGreaterEqual(int(response.headers['X-Total-Count']), 1)
         self.assertEqual(response.headers['X-Page-Limit'], '1')
         self.assertEqual(response.headers['X-Page-Offset'], '0')
