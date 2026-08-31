@@ -114,6 +114,57 @@ def load_events(path: str | Path | None = None, limit: int | None = None) -> lis
         ]
 
 
+def _escape_like(value: str) -> str:
+    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
+def search_events(
+    path: str | Path | None = None,
+    *,
+    source: str | None = None,
+    query: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Event], int]:
+    init_db(path)
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if source:
+        clauses.append('source = ?')
+        params.append(source)
+    if query:
+        clauses.append("raw_log LIKE ? ESCAPE '\\'")
+        params.append(f'%{_escape_like(query)}%')
+    if start:
+        clauses.append('timestamp >= ?')
+        params.append(start.isoformat())
+    if end:
+        clauses.append('timestamp <= ?')
+        params.append(end.isoformat())
+
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    count_sql = f'SELECT COUNT(*) FROM events{where}'
+    data_sql = (
+        f'SELECT event_json FROM events{where} '
+        'ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+    )
+
+    with connect(path) as conn:
+        total = int(conn.execute(count_sql, tuple(params)).fetchone()[0])
+        rows = conn.execute(
+            data_sql,
+            tuple(params + [limit, max(offset, 0)]),
+        )
+        events = [
+            Event.from_dict(json.loads(row['event_json']))
+            for row in rows
+        ]
+    return events, total
+
+
 def save_triage(record: dict, path: str | Path | None = None) -> dict:
     init_db(path)
     created_at = record.get('created_at') or datetime.now(timezone.utc).isoformat()
