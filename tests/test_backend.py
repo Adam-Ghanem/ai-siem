@@ -8,6 +8,7 @@ os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main
 from backend.security import reset_rate_limit_state
+from backend.threat_intel import ThreatIntelIndex
 
 AUTH = {'Authorization': 'Bearer test-token'}
 
@@ -77,6 +78,66 @@ class BackendApiTests(unittest.TestCase):
         self.assertTrue(body['recommended_actions'])
         self.assertIn('confidence', body)
         self.assertIn('mitre_techniques', body)
+
+    def test_threat_intel_lookup_endpoint_returns_aggregated_context(self):
+        original = main.THREAT_INTEL
+        main.THREAT_INTEL = ThreatIntelIndex(
+            [
+                {
+                    'indicator': '203.0.113.55',
+                    'type': 'ip',
+                    'source': 'unit-feed',
+                    'confidence': 91,
+                    'severity': 'critical',
+                    'tags': ['c2'],
+                }
+            ]
+        )
+        try:
+            response = self.client.get(
+                '/api/threat-intel/lookup?indicator=203.0.113.55',
+                headers=AUTH,
+            )
+        finally:
+            main.THREAT_INTEL = original
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['indicator'], '203.0.113.55')
+        self.assertEqual(body['match_count'], 1)
+        self.assertEqual(body['max_confidence'], 91)
+        self.assertEqual(body['max_severity'], 'critical')
+
+    def test_event_threat_intel_endpoint_enriches_event_observables(self):
+        event = next((item for item in main.EVENTS if item.src_ip or item.dst_ip), None)
+        self.assertIsNotNone(event)
+        indicator = event.src_ip or event.dst_ip
+        original = main.THREAT_INTEL
+        main.THREAT_INTEL = ThreatIntelIndex(
+            [
+                {
+                    'indicator': indicator,
+                    'type': 'ip',
+                    'source': 'unit-feed',
+                    'confidence': 84,
+                    'severity': 'high',
+                    'tags': ['malicious-infrastructure'],
+                }
+            ]
+        )
+        try:
+            response = self.client.get(
+                f'/api/events/{event.id}/threat-intel',
+                headers=AUTH,
+            )
+        finally:
+            main.THREAT_INTEL = original
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['event_id'], event.id)
+        self.assertEqual(len(body['matches']), 1)
+        self.assertEqual(body['matches'][0]['indicator'], indicator)
 
 if __name__ == '__main__':
     unittest.main()
