@@ -23,11 +23,13 @@ class IngestIdempotencyTests(unittest.TestCase):
         reset_rate_limit_state()
         self.original_storage = main.AI_SIEM_STORAGE
         self.original_events = list(main.EVENTS)
+        self.original_capacity = main.MAX_IN_MEMORY_EVENTS
         main.AI_SIEM_STORAGE = 'memory'
 
     def tearDown(self):
         main.EVENTS[:] = self.original_events
         main.AI_SIEM_STORAGE = self.original_storage
+        main.MAX_IN_MEMORY_EVENTS = self.original_capacity
 
     def test_retry_with_same_event_id_is_idempotent(self):
         event = {
@@ -76,6 +78,25 @@ class IngestIdempotencyTests(unittest.TestCase):
             sum(item.id == event['id'] for item in main.EVENTS),
             1,
         )
+
+    def test_duplicate_retry_does_not_consume_capacity(self):
+        event = {
+            'id': 'evt-idempotency-capacity-001',
+            'timestamp': '2026-08-31T22:02:00+00:00',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-capacity-01',
+            'raw_log': 'capacity replay fixture',
+        }
+        first = self.client.post('/api/ingest', json=event, headers=AUTH)
+        self.assertEqual(first.status_code, 200)
+
+        main.MAX_IN_MEMORY_EVENTS = len(main.EVENTS)
+        retry = self.client.post('/api/ingest', json=event, headers=AUTH)
+
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()['ingested'], 0)
+        self.assertEqual(retry.json()['duplicates_ignored'], 1)
 
 
 if __name__ == '__main__':
