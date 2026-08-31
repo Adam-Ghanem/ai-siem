@@ -1,3 +1,4 @@
+import json
 import os
 import secrets
 import threading
@@ -17,6 +18,34 @@ MAX_IN_MEMORY_EVENTS = int(os.getenv('AI_SIEM_MAX_IN_MEMORY_EVENTS', '10000'))
 MAX_RATE_LIMIT_KEYS = int(os.getenv('AI_SIEM_MAX_RATE_LIMIT_KEYS', '10000'))
 TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() == 'true'
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
+
+VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
+
+
+def _load_api_keys(raw: str) -> dict[str, str]:
+    raw = raw.strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError('AI_SIEM_API_KEYS must be valid JSON') from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError('AI_SIEM_API_KEYS must be a JSON object mapping tokens to roles')
+
+    keys: dict[str, str] = {}
+    for token, role in payload.items():
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError('AI_SIEM_API_KEYS contains an empty or invalid token')
+        if not isinstance(role, str) or role not in VALID_ROLES:
+            raise RuntimeError(
+                'AI_SIEM_API_KEYS roles must be one of: admin, analyst, ingestor, viewer'
+            )
+        keys[token] = role
+    return keys
+
+
+API_KEYS = _load_api_keys(os.getenv('AI_SIEM_API_KEYS', ''))
 
 _GLOBAL_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
 _INGEST_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
@@ -42,6 +71,7 @@ def client_ip(request: Request) -> str:
 def audit_log(request: Request, action: str, result: str, detail: str = '') -> None:
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     request_id = getattr(request.state, 'request_id', '')
+    role = getattr(request.state, 'auth_role', '')
     line = (
         f'timestamp={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
         f'request_id={_safe_text(request_id, 64)} '
@@ -50,6 +80,8 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
         f'action={_safe_text(action, 64)} '
         f'result={_safe_text(result, 64)}'
     )
+    if role:
+        line += f' role={_safe_text(role, 32)}'
     if detail:
         line += f' detail={_safe_text(detail)}'
     with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
@@ -82,19 +114,37 @@ def enforce_rate_limit(request: Request) -> None:
                 raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
 
+def _resolve_role(token: str) -> str | None:
+    for configured_token, role in API_KEYS.items():
+        if secrets.compare_digest(token, configured_token):
+            return role
+    if API_KEY and secrets.compare_digest(token, API_KEY):
+        return 'admin'
+    return None
+
+
+def _required_roles(request: Request) -> set[str]:
+    if request.method == 'POST' and request.url.path == '/api/ingest':
+        return {'ingestor', 'admin'}
+    if request.method == 'POST' and request.url.path == '/api/triage':
+        return {'analyst', 'admin'}
+    return VALID_ROLES
+
+
 def enforce_auth(request: Request) -> None:
     if request.url.path == '/api/health':
         return
     authorization = request.headers.get('authorization', '')
     scheme, _, token = authorization.partition(' ')
-    if (
-        not API_KEY
-        or scheme.lower() != 'bearer'
-        or not token
-        or not secrets.compare_digest(token, API_KEY)
-    ):
+    role = _resolve_role(token) if scheme.lower() == 'bearer' and token else None
+    if role is None:
         audit_log(request, 'auth', 'failed')
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
+
+    request.state.auth_role = role
+    if role not in _required_roles(request):
+        audit_log(request, 'authz', 'forbidden')
+        raise HTTPException(status_code=403, detail='Insufficient role for this operation')
 
 
 def reset_rate_limit_state() -> None:
