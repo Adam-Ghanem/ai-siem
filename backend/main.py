@@ -34,6 +34,7 @@ from .storage import (
     load_triage,
     save_events,
     save_triage,
+    search_events as search_stored_events,
 )
 from .storage import stats as storage_stats
 from .threat_intel import ThreatIntelIndex
@@ -55,7 +56,7 @@ THREAT_INTEL_FILE = Path(
     )
 )
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.5.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.6.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -105,7 +106,7 @@ def anomalies():
     return detect_anomalies(EVENTS)
 
 
-def _page(items, limit: int, offset: int, response: Response):
+def _validate_page(limit: int, offset: int) -> None:
     if limit < 1 or limit > MAX_PAGE_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -113,12 +114,20 @@ def _page(items, limit: int, offset: int, response: Response):
         )
     if offset < 0:
         raise HTTPException(status_code=400, detail='offset must be non-negative')
-    total = len(items)
+
+
+def _set_page_headers(total: int, limit: int, offset: int, response: Response) -> None:
     response.headers['X-Total-Count'] = str(total)
     response.headers['X-Page-Limit'] = str(limit)
     response.headers['X-Page-Offset'] = str(offset)
     next_offset = offset + limit if offset + limit < total else ''
     response.headers['X-Next-Offset'] = str(next_offset)
+
+
+def _page(items, limit: int, offset: int, response: Response):
+    _validate_page(limit, offset)
+    total = len(items)
+    _set_page_headers(total, limit, offset, response)
     return items[offset:offset + limit]
 
 
@@ -192,6 +201,45 @@ def get_events(
     if src_ip:
         data = [e for e in data if e.src_ip == src_ip]
     return [e.to_dict() for e in _page(data, limit, offset, response)]
+
+
+@app.get('/api/search/events')
+def search_event_history(
+    response: Response,
+    source: str | None = None,
+    q: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
+):
+    _validate_page(limit, offset)
+
+    if AI_SIEM_STORAGE == 'sqlite':
+        results, total = search_stored_events(
+            source=source,
+            query=q,
+            start=start,
+            end=end,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        data = EVENTS
+        if source:
+            data = [event for event in data if event.source == source]
+        if q:
+            data = [event for event in data if q in event.raw_log]
+        if start:
+            data = [event for event in data if event.timestamp >= start]
+        if end:
+            data = [event for event in data if event.timestamp <= end]
+        data = sorted(data, key=lambda event: event.timestamp, reverse=True)
+        total = len(data)
+        results = data[offset:offset + limit]
+
+    _set_page_headers(total, limit, offset, response)
+    return [event.to_dict() for event in results]
 
 
 @app.get('/api/events/{event_id}/threat-intel')
