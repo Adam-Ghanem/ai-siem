@@ -50,6 +50,7 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(r.status_code,200)
         text=AUDIT_PATH.read_text(encoding='utf-8')
         self.assertIn('action=triage',text)
+        self.assertIn('role=admin',text)
         self.assertNotIn('Bearer',text)
         self.assertEqual(len(text.splitlines()), 1)
         self.assertTrue(r.json().get('request_id'))
@@ -70,6 +71,51 @@ class SecurityTests(unittest.TestCase):
         response = self.client.get('/api/triage?limit=1', headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
+
+    def test_role_based_access_separates_read_ingest_and_triage(self):
+        original_keys = security.API_KEYS
+        security.API_KEYS = {
+            'viewer-token': 'viewer',
+            'ingestor-token': 'ingestor',
+            'analyst-token': 'analyst',
+        }
+        viewer={'Authorization':'Bearer viewer-token'}
+        ingestor={'Authorization':'Bearer ingestor-token'}
+        analyst={'Authorization':'Bearer analyst-token'}
+        try:
+            self.assertEqual(self.client.get('/api/events', headers=viewer).status_code, 200)
+            self.assertEqual(
+                self.client.post('/api/ingest', headers=viewer, json={'logs':['x']}).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.post('/api/triage', headers=viewer, json={'alert_id':'AL-RBAC','action':'reviewed'}).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.post('/api/ingest', headers=ingestor, json={'logs':['x']}).status_code,
+                200,
+            )
+            self.assertEqual(
+                self.client.post('/api/triage', headers=ingestor, json={'alert_id':'AL-RBAC','action':'reviewed'}).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.post('/api/triage', headers=analyst, json={'alert_id':'AL-RBAC','action':'reviewed'}).status_code,
+                200,
+            )
+        finally:
+            security.API_KEYS = original_keys
+
+    def test_api_key_role_configuration_validation(self):
+        self.assertEqual(
+            security._load_api_keys('{"read-token":"viewer","soc-token":"analyst"}'),
+            {'read-token':'viewer','soc-token':'analyst'},
+        )
+        with self.assertRaises(RuntimeError):
+            security._load_api_keys('{"token":"superuser"}')
+        with self.assertRaises(RuntimeError):
+            security._load_api_keys('[]')
 
     def test_parser_stats_unknown_format(self):
         parse_event('this format is not supported')
