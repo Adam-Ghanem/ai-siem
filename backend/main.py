@@ -36,6 +36,7 @@ from .storage import (
     save_triage,
 )
 from .storage import stats as storage_stats
+from .threat_intel import ThreatIntelIndex
 
 AI_SIEM_HOST = os.getenv('AI_SIEM_HOST', '0.0.0.0')
 AI_SIEM_PORT = int(os.getenv('AI_SIEM_PORT', '8000'))
@@ -47,8 +48,14 @@ AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
 DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
+THREAT_INTEL_FILE = Path(
+    os.getenv(
+        'AI_SIEM_THREAT_INTEL_FILE',
+        str(Path(__file__).resolve().parents[1] / 'data' / 'threat_intel.json'),
+    )
+)
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.4.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.5.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -62,6 +69,7 @@ app.add_middleware(
 )
 
 TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
+THREAT_INTEL = ThreatIntelIndex.from_json_file(THREAT_INTEL_FILE)
 
 
 def _load_sample_events():
@@ -157,6 +165,7 @@ def health():
         'events_loaded': len(EVENTS),
         'allowed_origin': AI_SIEM_ALLOWED_ORIGIN,
         'storage': AI_SIEM_STORAGE,
+        'threat_intel': THREAT_INTEL.stats(),
     }
 
 
@@ -183,6 +192,31 @@ def get_events(
     if src_ip:
         data = [e for e in data if e.src_ip == src_ip]
     return [e.to_dict() for e in _page(data, limit, offset, response)]
+
+
+@app.get('/api/events/{event_id}/threat-intel')
+def get_event_threat_intel(event_id: str):
+    event = next((item for item in EVENTS if item.id == event_id), None)
+    if event is None:
+        raise HTTPException(status_code=404, detail='Event not found')
+    return {
+        'event_id': event.id,
+        'matches': THREAT_INTEL.enrich_events([event]),
+    }
+
+
+@app.get('/api/threat-intel/lookup')
+def get_threat_intel_lookup(indicator: str):
+    if not indicator.strip():
+        raise HTTPException(status_code=400, detail='indicator is required')
+    if len(indicator) > 512:
+        raise HTTPException(status_code=400, detail='indicator exceeds 512 characters')
+    return THREAT_INTEL.lookup(indicator)
+
+
+@app.get('/api/threat-intel/stats')
+def get_threat_intel_stats():
+    return THREAT_INTEL.stats()
 
 
 @app.get('/api/alerts')
@@ -244,12 +278,18 @@ def get_incident_investigation(incident_id: str):
     )
     if incident is None:
         raise HTTPException(status_code=404, detail='Incident not found')
-    return build_investigation(
+
+    analysis = build_investigation(
         incident,
         current_alerts,
         EVENTS,
         anomalies(),
     )
+    related_event_ids = set(analysis['related_event_ids'])
+    related_events = [event for event in EVENTS if event.id in related_event_ids]
+    analysis['threat_intelligence'] = THREAT_INTEL.enrich_events(related_events)
+    analysis['grounding']['generated_from'].append('threat_intelligence')
+    return analysis
 
 
 @app.get('/api/anomalies')
