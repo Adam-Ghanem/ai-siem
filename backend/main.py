@@ -67,7 +67,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.7.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.8.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -508,12 +508,6 @@ def _extract_items(payload: Any):
             detail=f'Maximum {MAX_EVENTS_PER_INGEST} events per ingest request',
         )
 
-    if len(EVENTS) + len(items) > MAX_IN_MEMORY_EVENTS:
-        raise HTTPException(
-            status_code=413,
-            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
-        )
-
     for item in items:
         raw = item if isinstance(item, str) else json.dumps(item, separators=(',', ':'))
         if len(raw.encode('utf-8')) > MAX_RAW_LOG_BYTES:
@@ -523,6 +517,18 @@ def _extract_items(payload: Any):
             )
 
     return items
+
+
+def _deduplicate_ingest(parsed):
+    known_ids = {event.id for event in EVENTS}
+    accepted = []
+    seen_ids = set(known_ids)
+    for event in parsed:
+        if event.id in seen_ids:
+            continue
+        seen_ids.add(event.id)
+        accepted.append(event)
+    return accepted, len(parsed) - len(accepted)
 
 
 @app.post('/api/ingest')
@@ -536,16 +542,30 @@ async def ingest(request: Request):
     items = _extract_items(payload)
     before_stats = parser_stats()
     parsed = parse_events(items)
-    EVENTS.extend(parsed)
+    accepted, duplicates_ignored = _deduplicate_ingest(parsed)
+
+    if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
+        raise HTTPException(
+            status_code=413,
+            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
+        )
+
+    EVENTS.extend(accepted)
 
     if AI_SIEM_STORAGE == 'sqlite':
-        save_events(parsed)
+        save_events(accepted)
 
     after_stats = parser_stats()
-    audit_log(request, 'ingest', 'success', f'count={len(parsed)}')
+    audit_log(
+        request,
+        'ingest',
+        'success',
+        f'count={len(accepted)} duplicates_ignored={duplicates_ignored}',
+    )
 
     return {
-        'ingested': len(parsed),
+        'ingested': len(accepted),
+        'duplicates_ignored': duplicates_ignored,
         'total_events': len(EVENTS),
         'storage': AI_SIEM_STORAGE,
         'unknown_events_detected': (
