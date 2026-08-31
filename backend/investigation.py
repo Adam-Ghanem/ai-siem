@@ -23,17 +23,25 @@ def _risk_level(score: int) -> str:
     return 'low'
 
 
-def _related_anomalies(incident: Incident, anomalies: list[Anomaly]) -> list[Anomaly]:
-    alert_event_ids = set()
-    for anomaly in anomalies:
-        if alert_event_ids.intersection(anomaly.related_event_ids):
-            continue
+def _related_anomalies(
+    incident: Incident,
+    related_event_ids: set[str],
+    anomalies: list[Anomaly],
+) -> list[Anomaly]:
+    entities = {
+        *incident.related_assets,
+        *incident.related_users,
+        *incident.related_src_ips,
+    }
     return [
         anomaly
         for anomaly in anomalies
-        if anomaly.entity in incident.related_assets
-        or anomaly.entity in incident.related_users
-        or anomaly.entity in incident.related_src_ips
+        if related_event_ids.intersection(anomaly.related_event_ids)
+        or anomaly.entity in entities
+        or any(
+            entity and entity in anomaly.entity
+            for entity in incident.related_users + incident.related_src_ips
+        )
     ]
 
 
@@ -51,7 +59,11 @@ def build_investigation(
         for event_id in alert.event_ids
     }
     related_events = [event for event in events if event.id in related_event_ids]
-    related_anomalies = _related_anomalies(incident, anomalies)
+    related_anomalies = _related_anomalies(
+        incident,
+        related_event_ids,
+        anomalies,
+    )
 
     severity_bonus = max(
         (_SEVERITY_WEIGHT.get(alert.severity, 0) for alert in related_alerts),
@@ -90,10 +102,9 @@ def build_investigation(
         key_evidence.append(incident.evidence_summary)
 
     actions = list(dict.fromkeys(action for action in incident.recommended_actions if action))
-    if related_anomalies:
-        for anomaly in related_anomalies:
-            if anomaly.recommended_action and anomaly.recommended_action not in actions:
-                actions.append(anomaly.recommended_action)
+    for anomaly in related_anomalies:
+        if anomaly.recommended_action and anomaly.recommended_action not in actions:
+            actions.append(anomaly.recommended_action)
 
     entities = []
     if incident.related_assets:
