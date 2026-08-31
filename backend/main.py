@@ -16,6 +16,7 @@ from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
+from .investigation import build_investigation
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
 from .rules import RULES
@@ -47,7 +48,7 @@ MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
 DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.3.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.4.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -231,6 +232,24 @@ def get_incident(incident_id: str):
         if incident.incident_id == incident_id:
             return incident.to_dict()
     raise HTTPException(status_code=404, detail='Incident not found')
+
+
+@app.get('/api/incidents/{incident_id}/investigation')
+def get_incident_investigation(incident_id: str):
+    current_alerts = alerts()
+    current_incidents = correlate(current_alerts)
+    incident = next(
+        (item for item in current_incidents if item.incident_id == incident_id),
+        None,
+    )
+    if incident is None:
+        raise HTTPException(status_code=404, detail='Incident not found')
+    return build_investigation(
+        incident,
+        current_alerts,
+        EVENTS,
+        anomalies(),
+    )
 
 
 @app.get('/api/anomalies')

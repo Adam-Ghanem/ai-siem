@@ -56,5 +56,27 @@ class BackendApiTests(unittest.TestCase):
         response = self.client.get('/api/events?limit=0', headers=AUTH)
         self.assertEqual(response.status_code, 400)
 
+    def test_incident_investigation_returns_evidence_grounded_analysis(self):
+        incidents = self.client.get('/api/incidents', headers=AUTH).json()
+        self.assertGreater(len(incidents), 0)
+        incident_id = incidents[0]['incident_id']
+
+        response = self.client.get(
+            f'/api/incidents/{incident_id}/investigation',
+            headers=AUTH,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['incident_id'], incident_id)
+        self.assertIn(body['risk_level'], {'critical', 'high', 'medium', 'low'})
+        self.assertGreaterEqual(body['risk_score'], 0)
+        self.assertLessEqual(body['risk_score'], 100)
+        self.assertTrue(body['summary'])
+        self.assertTrue(body['key_evidence'])
+        self.assertTrue(body['recommended_actions'])
+        self.assertIn('confidence', body)
+        self.assertIn('mitre_techniques', body)
+
 if __name__ == '__main__':
     unittest.main()
