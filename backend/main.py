@@ -31,8 +31,10 @@ from .security import (
 from .storage import (
     init_db,
     load_events as load_stored_events,
+    load_incident_case,
     load_triage,
     save_events,
+    save_incident_case,
     save_triage,
     search_events as search_stored_events,
 )
@@ -56,7 +58,16 @@ THREAT_INTEL_FILE = Path(
     )
 )
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.6.0')
+VALID_INCIDENT_STATUSES = {'open', 'investigating', 'contained', 'resolved', 'closed'}
+VALID_INCIDENT_DISPOSITIONS = {
+    'undetermined',
+    'true_positive',
+    'false_positive',
+    'benign',
+    'duplicate',
+}
+
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.7.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -70,6 +81,7 @@ app.add_middleware(
 )
 
 TRIAGE = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else []
+INCIDENT_CASES: dict[str, dict[str, Any]] = {}
 THREAT_INTEL = ThreatIntelIndex.from_json_file(THREAT_INTEL_FILE)
 
 
@@ -98,8 +110,29 @@ def alerts():
     return run_detections(EVENTS)
 
 
+def _case_for(incident_id: str) -> dict[str, Any] | None:
+    if AI_SIEM_STORAGE == 'sqlite':
+        return load_incident_case(incident_id)
+    value = INCIDENT_CASES.get(incident_id)
+    return dict(value) if value else None
+
+
+def _apply_case(incident):
+    case = _case_for(incident.incident_id)
+    if case:
+        incident.status = case['status']
+        incident.owner = case['owner']
+    return incident
+
+
+def _incident_dict(incident) -> dict[str, Any]:
+    data = incident.to_dict()
+    data['case'] = _case_for(incident.incident_id)
+    return data
+
+
 def incidents():
-    return correlate(alerts())
+    return [_apply_case(item) for item in correlate(alerts())]
 
 
 def anomalies():
@@ -309,21 +342,90 @@ def get_incidents(
         data = [i for i in data if i.status == status]
     if priority:
         data = [i for i in data if i.priority == priority]
-    return [i.to_dict() for i in _page(data, limit, offset, response)]
+    return [_incident_dict(i) for i in _page(data, limit, offset, response)]
 
 
 @app.get('/api/incidents/{incident_id}')
 def get_incident(incident_id: str):
     for incident in incidents():
         if incident.incident_id == incident_id:
-            return incident.to_dict()
+            return _incident_dict(incident)
     raise HTTPException(status_code=404, detail='Incident not found')
+
+
+@app.post('/api/incidents/{incident_id}/case')
+async def update_incident_case(incident_id: str, request: Request):
+    incident = next((item for item in incidents() if item.incident_id == incident_id), None)
+    if incident is None:
+        raise HTTPException(status_code=404, detail='Incident not found')
+
+    try:
+        payload = await request.json()
+    except Exception:
+        audit_log(request, 'incident_case', 'invalid_json')
+        raise HTTPException(status_code=400, detail='Invalid JSON body')
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Request body must be a JSON object')
+
+    current = _case_for(incident_id) or {
+        'status': incident.status,
+        'owner': incident.owner,
+        'disposition': 'undetermined',
+        'note': '',
+    }
+
+    def bounded_text(name: str, default: str, max_length: int) -> str:
+        value = payload.get(name, default)
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f'{name} must be a string')
+        value = value.strip()
+        if len(value) > max_length:
+            raise HTTPException(status_code=400, detail=f'{name} exceeds {max_length} characters')
+        return value
+
+    status = bounded_text('status', current['status'], 32)
+    if status not in VALID_INCIDENT_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail='status must be one of: closed, contained, investigating, open, resolved',
+        )
+    disposition = bounded_text('disposition', current['disposition'], 32)
+    if disposition not in VALID_INCIDENT_DISPOSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail='disposition must be one of: benign, duplicate, false_positive, true_positive, undetermined',
+        )
+    owner = bounded_text('owner', current['owner'], 128) or 'unassigned'
+    note = bounded_text('note', current['note'], 2048)
+
+    record = {
+        'incident_id': incident_id,
+        'status': status,
+        'owner': owner,
+        'disposition': disposition,
+        'note': note,
+        'updated_by': getattr(request.state, 'auth_role', 'unknown'),
+        'request_id': getattr(request.state, 'request_id', None),
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    if AI_SIEM_STORAGE == 'sqlite':
+        record = save_incident_case(record)
+    else:
+        INCIDENT_CASES[incident_id] = dict(record)
+
+    audit_log(
+        request,
+        'incident_case',
+        'success',
+        f'incident_id={incident_id} status={status} owner={owner}',
+    )
+    return record
 
 
 @app.get('/api/incidents/{incident_id}/investigation')
 def get_incident_investigation(incident_id: str):
     current_alerts = alerts()
-    current_incidents = correlate(current_alerts)
+    current_incidents = incidents()
     incident = next(
         (item for item in current_incidents if item.incident_id == incident_id),
         None,
@@ -340,7 +442,10 @@ def get_incident_investigation(incident_id: str):
     related_event_ids = set(analysis['related_event_ids'])
     related_events = [event for event in EVENTS if event.id in related_event_ids]
     analysis['threat_intelligence'] = THREAT_INTEL.enrich_events(related_events)
+    analysis['case'] = _case_for(incident_id)
     analysis['grounding']['generated_from'].append('threat_intelligence')
+    if analysis['case']:
+        analysis['grounding']['generated_from'].append('incident_case')
     return analysis
 
 
@@ -377,7 +482,11 @@ def get_parser_stats():
 def get_storage_stats():
     if AI_SIEM_STORAGE == 'sqlite':
         return storage_stats()
-    return {'backend': 'memory', 'stored_events': len(EVENTS)}
+    return {
+        'backend': 'memory',
+        'stored_events': len(EVENTS),
+        'stored_incident_cases': len(INCIDENT_CASES),
+    }
 
 
 def _extract_items(payload: Any):

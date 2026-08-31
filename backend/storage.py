@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS triage (
 );
 CREATE INDEX IF NOT EXISTS idx_triage_alert_id ON triage(alert_id);
 CREATE INDEX IF NOT EXISTS idx_triage_created_at ON triage(created_at);
+
+CREATE TABLE IF NOT EXISTS incident_cases (
+    incident_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    disposition TEXT NOT NULL,
+    note TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    request_id TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_status ON incident_cases(status);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_owner ON incident_cases(owner);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_updated_at ON incident_cases(updated_at);
 '''
 
 
@@ -226,11 +240,84 @@ def load_triage(
         ]
 
 
+def save_incident_case(record: dict, path: str | Path | None = None) -> dict:
+    init_db(path)
+    updated_at = record.get('updated_at') or datetime.now(timezone.utc).isoformat()
+    values = (
+        str(record['incident_id']),
+        str(record.get('status') or 'open'),
+        str(record.get('owner') or 'unassigned'),
+        str(record.get('disposition') or 'undetermined'),
+        str(record.get('note') or ''),
+        str(record.get('updated_by') or 'unknown'),
+        str(record.get('request_id') or ''),
+        updated_at,
+    )
+    with connect(path) as conn:
+        conn.execute(
+            '''
+            INSERT INTO incident_cases
+            (incident_id, status, owner, disposition, note, updated_by, request_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(incident_id) DO UPDATE SET
+                status=excluded.status,
+                owner=excluded.owner,
+                disposition=excluded.disposition,
+                note=excluded.note,
+                updated_by=excluded.updated_by,
+                request_id=excluded.request_id,
+                updated_at=excluded.updated_at
+            ''',
+            values,
+        )
+        conn.commit()
+    return {
+        'incident_id': values[0],
+        'status': values[1],
+        'owner': values[2],
+        'disposition': values[3],
+        'note': values[4],
+        'updated_by': values[5],
+        'request_id': values[6] or None,
+        'updated_at': values[7],
+    }
+
+
+def load_incident_case(
+    incident_id: str,
+    path: str | Path | None = None,
+) -> dict | None:
+    init_db(path)
+    with connect(path) as conn:
+        row = conn.execute(
+            '''
+            SELECT incident_id, status, owner, disposition, note,
+                   updated_by, request_id, updated_at
+            FROM incident_cases
+            WHERE incident_id = ?
+            ''',
+            (incident_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        'incident_id': row['incident_id'],
+        'status': row['status'],
+        'owner': row['owner'],
+        'disposition': row['disposition'],
+        'note': row['note'],
+        'updated_by': row['updated_by'],
+        'request_id': row['request_id'] or None,
+        'updated_at': row['updated_at'],
+    }
+
+
 def stats(path: str | Path | None = None) -> dict:
     init_db(path)
     with connect(path) as conn:
         total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
         triage_total = conn.execute('SELECT COUNT(*) FROM triage').fetchone()[0]
+        incident_case_total = conn.execute('SELECT COUNT(*) FROM incident_cases').fetchone()[0]
         sources = {
             row['source']: row['count']
             for row in conn.execute(
@@ -245,6 +332,7 @@ def stats(path: str | Path | None = None) -> dict:
         'db_path': str(_db_path(path)),
         'stored_events': total,
         'stored_triage_records': triage_total,
+        'stored_incident_cases': incident_case_total,
         'source_distribution': sources,
         'last_event_timestamp': last['timestamp'] if last else None,
     }
