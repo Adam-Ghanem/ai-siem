@@ -128,6 +128,12 @@ def _required_roles(request: Request) -> set[str]:
         return {'ingestor', 'admin'}
     if request.method == 'POST' and request.url.path == '/api/triage':
         return {'analyst', 'admin'}
+    if (
+        request.method == 'POST'
+        and request.url.path.startswith('/api/incidents/')
+        and request.url.path.endswith('/case')
+    ):
+        return {'analyst', 'admin'}
     return VALID_ROLES
 
 
