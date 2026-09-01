@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .models import Event
+from .models import Alert, Event, parse_time
 
 DEFAULT_DB_PATH = Path(os.getenv('AI_SIEM_DB_PATH', 'data/ai_siem.db'))
 
@@ -27,6 +27,25 @@ CREATE INDEX IF NOT EXISTS idx_events_source_type ON events(source, event_type);
 CREATE INDEX IF NOT EXISTS idx_events_asset ON events(asset);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user);
 CREATE INDEX IF NOT EXISTS idx_events_src_ip ON events(src_ip);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    alert_id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    tactic TEXT NOT NULL,
+    asset TEXT,
+    user TEXT,
+    src_ip TEXT,
+    alert_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_alerts_rule_id ON alerts(rule_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_alerts_tactic ON alerts(tactic);
+CREATE INDEX IF NOT EXISTS idx_alerts_asset ON alerts(asset);
+CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user);
+CREATE INDEX IF NOT EXISTS idx_alerts_src_ip ON alerts(src_ip);
 
 CREATE TABLE IF NOT EXISTS triage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +173,74 @@ def load_events(path: str | Path | None = None, limit: int | None = None) -> lis
         return [
             Event.from_dict(json.loads(row['event_json']))
             for row in conn.execute(query, params)
+        ]
+
+
+def _alert_from_dict(data: dict) -> Alert:
+    return Alert(
+        alert_id=str(data['alert_id']),
+        rule_id=str(data['rule_id']),
+        title=str(data['title']),
+        severity=str(data['severity']),
+        confidence=float(data['confidence']),
+        tactic=str(data['tactic']),
+        technique=str(data['technique']),
+        timestamp=parse_time(data.get('timestamp')),
+        asset=data.get('asset'),
+        user=data.get('user'),
+        src_ip=data.get('src_ip'),
+        event_ids=list(data.get('event_ids') or []),
+        evidence=list(data.get('evidence') or []),
+        recommended_action=str(data.get('recommended_action') or ''),
+    )
+
+
+def save_alerts(alerts: Iterable[Alert], path: str | Path | None = None) -> int:
+    init_db(path)
+    rows = []
+    for alert in alerts:
+        data = alert.to_dict()
+        rows.append((
+            alert.alert_id,
+            alert.timestamp.isoformat(),
+            alert.rule_id,
+            alert.severity,
+            alert.tactic,
+            alert.asset,
+            alert.user,
+            alert.src_ip,
+            json.dumps(data, ensure_ascii=False),
+        ))
+    if not rows:
+        return 0
+    with connect(path) as conn:
+        conn.executemany(
+            '''
+            INSERT OR IGNORE INTO alerts
+            (alert_id, timestamp, rule_id, severity, tactic, asset, user, src_ip, alert_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            rows,
+        )
+        conn.commit()
+        return conn.total_changes
+
+
+def load_alerts(
+    path: str | Path | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Alert]:
+    init_db(path)
+    query = 'SELECT alert_json FROM alerts ORDER BY timestamp DESC, alert_id DESC'
+    params: list[int] = []
+    if limit is not None:
+        query += ' LIMIT ? OFFSET ?'
+        params.extend([limit, max(offset, 0)])
+    with connect(path) as conn:
+        return [
+            _alert_from_dict(json.loads(row['alert_json']))
+            for row in conn.execute(query, tuple(params))
         ]
 
 
@@ -345,6 +432,7 @@ def stats(path: str | Path | None = None) -> dict:
     init_db(path)
     with connect(path) as conn:
         total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+        alert_total = conn.execute('SELECT COUNT(*) FROM alerts').fetchone()[0]
         triage_total = conn.execute('SELECT COUNT(*) FROM triage').fetchone()[0]
         incident_case_total = conn.execute('SELECT COUNT(*) FROM incident_cases').fetchone()[0]
         source_rows = conn.execute(
@@ -356,6 +444,7 @@ def stats(path: str | Path | None = None) -> dict:
     return {
         'backend': 'sqlite',
         'stored_events': total,
+        'stored_alerts': alert_total,
         'stored_triage_records': triage_total,
         'stored_incident_cases': incident_case_total,
         'source_distribution': {row['source']: row['count'] for row in source_rows},
