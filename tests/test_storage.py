@@ -12,6 +12,7 @@ from backend.storage import (
     save_alerts,
     save_events,
     save_triage,
+    search_alerts,
     search_events,
     stats,
 )
@@ -172,6 +173,86 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(loaded[0].event_ids, ['evt-2'])
             self.assertEqual(loaded[1].user, 'adam')
             self.assertEqual(stats(db)['stored_alerts'], 2)
+
+    def test_search_alerts_filters_orders_and_counts_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'alert-search.db'
+            init_db(db)
+            alerts = [
+                Alert(
+                    alert_id='AL-SEARCH-1',
+                    rule_id='DET-AUTH-1',
+                    title='Credential attack',
+                    severity='high',
+                    confidence=0.90,
+                    tactic='Credential Access',
+                    technique='T1110',
+                    timestamp=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
+                    asset='host-a',
+                    user='adam',
+                    src_ip='203.0.113.10',
+                    event_ids=['evt-1'],
+                    evidence=['failed logins'],
+                    recommended_action='Investigate.',
+                ),
+                Alert(
+                    alert_id='AL-SEARCH-2',
+                    rule_id='DET-AUTH-2',
+                    title='Admin credential attack',
+                    severity='critical',
+                    confidence=0.97,
+                    tactic='Credential Access',
+                    technique='T1110',
+                    timestamp=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+                    asset='host-a',
+                    user='admin',
+                    src_ip='203.0.113.11',
+                    event_ids=['evt-2'],
+                    evidence=['password spray'],
+                    recommended_action='Contain.',
+                ),
+                Alert(
+                    alert_id='AL-SEARCH-3',
+                    rule_id='DET-EXEC-1',
+                    title='PowerShell execution',
+                    severity='medium',
+                    confidence=0.82,
+                    tactic='Execution',
+                    technique='T1059.001',
+                    timestamp=datetime(2026, 9, 1, 11, 0, tzinfo=timezone.utc),
+                    asset='host-b',
+                    user='admin',
+                    src_ip='203.0.113.12',
+                    event_ids=['evt-3'],
+                    evidence=['encoded command'],
+                    recommended_action='Review process tree.',
+                ),
+            ]
+            self.assertEqual(save_alerts(alerts, db), 3)
+
+            results, total = search_alerts(
+                db,
+                severity='critical',
+                tactic='Credential Access',
+                asset='host-a',
+                user='admin',
+                src_ip='203.0.113.11',
+                rule_id='DET-AUTH-2',
+                start=datetime(2026, 9, 1, 9, 30, tzinfo=timezone.utc),
+                end=datetime(2026, 9, 1, 10, 30, tzinfo=timezone.utc),
+                limit=10,
+                offset=0,
+            )
+
+            self.assertEqual(total, 1)
+            self.assertEqual([alert.alert_id for alert in results], ['AL-SEARCH-2'])
+
+            all_results, all_total = search_alerts(db, limit=2, offset=0)
+            self.assertEqual(all_total, 3)
+            self.assertEqual(
+                [alert.alert_id for alert in all_results],
+                ['AL-SEARCH-3', 'AL-SEARCH-2'],
+            )
 
     def test_triage_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,6 +55,40 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(response.headers['X-Page-Limit'], '1')
         self.assertEqual(response.headers['X-Page-Offset'], '0')
 
+    def test_alerts_support_storage_native_rule_and_time_filters(self):
+        sample = main.alerts()[0]
+        timestamp = sample.timestamp.isoformat()
+        response = self.client.get(
+            '/api/alerts',
+            params={
+                'rule_id': sample.rule_id,
+                'start': timestamp,
+                'end': timestamp,
+                'limit': 1,
+                'offset': 0,
+            },
+            headers=AUTH,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(response.json()[0]['rule_id'], sample.rule_id)
+        self.assertEqual(response.json()[0]['timestamp'], timestamp)
+        self.assertGreaterEqual(int(response.headers['X-Total-Count']), 1)
+        self.assertEqual(response.headers['X-Page-Limit'], '1')
+        self.assertEqual(response.headers['X-Page-Offset'], '0')
+
+    def test_alerts_reject_reversed_time_window(self):
+        response = self.client.get(
+            '/api/alerts',
+            params={
+                'start': '2026-09-01T11:00:00+00:00',
+                'end': '2026-09-01T10:00:00+00:00',
+            },
+            headers=AUTH,
+        )
+        self.assertEqual(response.status_code, 400)
+
     def test_metrics_total_events_matches_loaded_events(self):
         events = self.client.get('/api/events', headers=AUTH).json()
         metrics_response = self.client.get('/api/metrics', headers=AUTH)
