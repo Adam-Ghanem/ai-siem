@@ -68,7 +68,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.9.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.10.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -535,6 +535,13 @@ def _deduplicate_ingest(parsed):
     return accepted, len(parsed) - len(accepted)
 
 
+def _refresh_hot_window(accepted) -> None:
+    EVENTS.extend(accepted)
+    EVENTS.sort(key=lambda event: event.timestamp)
+    if len(EVENTS) > MAX_IN_MEMORY_EVENTS:
+        del EVENTS[:-MAX_IN_MEMORY_EVENTS]
+
+
 @app.post('/api/ingest')
 async def ingest(request: Request):
     try:
@@ -548,16 +555,16 @@ async def ingest(request: Request):
     parsed = parse_events(items)
     accepted, duplicates_ignored = _deduplicate_ingest(parsed)
 
-    if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
-        raise HTTPException(
-            status_code=413,
-            detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
-        )
-
-    EVENTS.extend(accepted)
-
     if AI_SIEM_STORAGE == 'sqlite':
         save_events(accepted)
+        _refresh_hot_window(accepted)
+    else:
+        if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
+            raise HTTPException(
+                status_code=413,
+                detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
+            )
+        EVENTS.extend(accepted)
 
     after_stats = parser_stats()
     audit_log(
@@ -571,6 +578,7 @@ async def ingest(request: Request):
         'ingested': len(accepted),
         'duplicates_ignored': duplicates_ignored,
         'total_events': len(EVENTS),
+        'hot_events': len(EVENTS),
         'storage': AI_SIEM_STORAGE,
         'unknown_events_detected': (
             after_stats['unknown_events'] - before_stats['unknown_events']
