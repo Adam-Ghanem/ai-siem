@@ -22,7 +22,7 @@ AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
 
 
-def _load_api_keys(raw: str) -> dict[str, str]:
+def _load_api_keys(raw: str) -> dict[str, str | dict[str, str]]:
     raw = raw.strip()
     if not raw:
         return {}
@@ -31,17 +31,37 @@ def _load_api_keys(raw: str) -> dict[str, str]:
     except json.JSONDecodeError as exc:
         raise RuntimeError('AI_SIEM_API_KEYS must be valid JSON') from exc
     if not isinstance(payload, dict):
-        raise RuntimeError('AI_SIEM_API_KEYS must be a JSON object mapping tokens to roles')
+        raise RuntimeError(
+            'AI_SIEM_API_KEYS must be a JSON object mapping tokens to roles or identities'
+        )
 
-    keys: dict[str, str] = {}
-    for token, role in payload.items():
+    keys: dict[str, str | dict[str, str]] = {}
+    for token, identity in payload.items():
         if not isinstance(token, str) or not token.strip():
             raise RuntimeError('AI_SIEM_API_KEYS contains an empty or invalid token')
+
+        if isinstance(identity, str):
+            if identity not in VALID_ROLES:
+                raise RuntimeError(
+                    'AI_SIEM_API_KEYS roles must be one of: admin, analyst, ingestor, viewer'
+                )
+            keys[token] = identity
+            continue
+
+        if not isinstance(identity, dict):
+            raise RuntimeError(
+                'AI_SIEM_API_KEYS values must be a role string or identity object'
+            )
+
+        role = identity.get('role')
+        principal = identity.get('principal')
         if not isinstance(role, str) or role not in VALID_ROLES:
             raise RuntimeError(
-                'AI_SIEM_API_KEYS roles must be one of: admin, analyst, ingestor, viewer'
+                'AI_SIEM_API_KEYS identity roles must be one of: admin, analyst, ingestor, viewer'
             )
-        keys[token] = role
+        if not isinstance(principal, str) or not principal.strip():
+            raise RuntimeError('AI_SIEM_API_KEYS identity principal must be a non-empty string')
+        keys[token] = {'role': role, 'principal': principal.strip()}
     return keys
 
 
@@ -72,6 +92,7 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     request_id = getattr(request.state, 'request_id', '')
     role = getattr(request.state, 'auth_role', '')
+    principal = getattr(request.state, 'auth_principal', '')
     line = (
         f'timestamp={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
         f'request_id={_safe_text(request_id, 64)} '
@@ -82,6 +103,8 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
     )
     if role:
         line += f' role={_safe_text(role, 32)}'
+    if principal:
+        line += f' principal={_safe_text(principal, 128)}'
     if detail:
         line += f' detail={_safe_text(detail)}'
     with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
@@ -114,13 +137,21 @@ def enforce_rate_limit(request: Request) -> None:
                 raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
 
-def _resolve_role(token: str) -> str | None:
-    for configured_token, role in API_KEYS.items():
-        if secrets.compare_digest(token, configured_token):
-            return role
+def _resolve_identity(token: str) -> tuple[str, str] | None:
+    for configured_token, identity in API_KEYS.items():
+        if not secrets.compare_digest(token, configured_token):
+            continue
+        if isinstance(identity, str):
+            return identity, ''
+        return identity['role'], identity['principal']
     if API_KEY and secrets.compare_digest(token, API_KEY):
-        return 'admin'
+        return 'admin', ''
     return None
+
+
+def _resolve_role(token: str) -> str | None:
+    identity = _resolve_identity(token)
+    return identity[0] if identity else None
 
 
 def _required_roles(request: Request) -> set[str]:
@@ -142,12 +173,15 @@ def enforce_auth(request: Request) -> None:
         return
     authorization = request.headers.get('authorization', '')
     scheme, _, token = authorization.partition(' ')
-    role = _resolve_role(token) if scheme.lower() == 'bearer' and token else None
-    if role is None:
+    identity = _resolve_identity(token) if scheme.lower() == 'bearer' and token else None
+    if identity is None:
         audit_log(request, 'auth', 'failed')
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
 
+    role, principal = identity
     request.state.auth_role = role
+    if principal:
+        request.state.auth_principal = principal
     if role not in _required_roles(request):
         audit_log(request, 'authz', 'forbidden')
         raise HTTPException(status_code=403, detail='Insufficient role for this operation')
