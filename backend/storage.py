@@ -244,6 +244,62 @@ def load_alerts(
         ]
 
 
+def search_alerts(
+    path: str | Path | None = None,
+    *,
+    severity: str | None = None,
+    tactic: str | None = None,
+    asset: str | None = None,
+    user: str | None = None,
+    src_ip: str | None = None,
+    rule_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Alert], int]:
+    init_db(path)
+    clauses: list[str] = []
+    params: list[object] = []
+
+    for column, value in (
+        ('severity', severity),
+        ('tactic', tactic),
+        ('asset', asset),
+        ('user', user),
+        ('src_ip', src_ip),
+        ('rule_id', rule_id),
+    ):
+        if value:
+            clauses.append(f'{column} = ?')
+            params.append(value)
+    if start:
+        clauses.append('timestamp >= ?')
+        params.append(start.isoformat())
+    if end:
+        clauses.append('timestamp <= ?')
+        params.append(end.isoformat())
+
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    count_sql = f'SELECT COUNT(*) FROM alerts{where}'
+    data_sql = (
+        f'SELECT alert_json FROM alerts{where} '
+        'ORDER BY timestamp DESC, alert_id DESC LIMIT ? OFFSET ?'
+    )
+
+    with connect(path) as conn:
+        total = int(conn.execute(count_sql, tuple(params)).fetchone()[0])
+        rows = conn.execute(
+            data_sql,
+            tuple(params + [limit, max(offset, 0)]),
+        )
+        results = [
+            _alert_from_dict(json.loads(row['alert_json']))
+            for row in rows
+        ]
+    return results, total
+
+
 def _escape_like(value: str) -> str:
     return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
