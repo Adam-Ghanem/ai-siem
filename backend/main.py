@@ -31,9 +31,11 @@ from .security import (
 from .storage import (
     existing_event_ids,
     init_db,
+    load_alerts,
     load_events as load_stored_events,
     load_incident_case,
     load_triage,
+    save_alerts,
     save_events,
     save_incident_case,
     save_triage,
@@ -68,7 +70,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.10.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.11.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -108,7 +110,11 @@ EVENTS = load_events()
 
 
 def alerts():
-    return run_detections(EVENTS)
+    current = run_detections(EVENTS)
+    if AI_SIEM_STORAGE == 'sqlite':
+        save_alerts(current)
+        return load_alerts()
+    return current
 
 
 def _case_for(incident_id: str) -> dict[str, Any] | None:
@@ -558,6 +564,7 @@ async def ingest(request: Request):
     if AI_SIEM_STORAGE == 'sqlite':
         save_events(accepted)
         _refresh_hot_window(accepted)
+        save_alerts(run_detections(EVENTS))
     else:
         if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
             raise HTTPException(
