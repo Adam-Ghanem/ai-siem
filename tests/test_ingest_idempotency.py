@@ -1,6 +1,8 @@
 import os
+import tempfile
 import unittest
 from copy import deepcopy
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -8,7 +10,7 @@ os.environ.setdefault('AI_SIEM_API_KEY', 'test-token')
 os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
-from backend import main
+from backend import main, storage
 from backend.security import reset_rate_limit_state
 
 AUTH = {'Authorization': 'Bearer test-token'}
@@ -97,6 +99,35 @@ class IngestIdempotencyTests(unittest.TestCase):
         self.assertEqual(retry.status_code, 200)
         self.assertEqual(retry.json()['ingested'], 0)
         self.assertEqual(retry.json()['duplicates_ignored'], 1)
+
+    def test_sqlite_retry_checks_persisted_history_not_only_memory(self):
+        event = {
+            'id': 'evt-idempotency-persisted-001',
+            'timestamp': '2026-08-31T22:03:00+00:00',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-persisted-01',
+            'raw_log': 'persisted replay fixture',
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original_db_path = storage.DEFAULT_DB_PATH
+            try:
+                storage.DEFAULT_DB_PATH = Path(tmp) / 'idempotency.db'
+                main.AI_SIEM_STORAGE = 'sqlite'
+                main.EVENTS[:] = []
+                persisted = main.parse_events([event])[0]
+                self.assertEqual(storage.save_events([persisted]), 1)
+
+                retry = self.client.post('/api/ingest', json=event, headers=AUTH)
+
+                self.assertEqual(retry.status_code, 200)
+                self.assertEqual(retry.json()['ingested'], 0)
+                self.assertEqual(retry.json()['duplicates_ignored'], 1)
+                self.assertEqual(len(main.EVENTS), 0)
+                self.assertEqual(storage.stats()['stored_events'], 1)
+            finally:
+                storage.DEFAULT_DB_PATH = original_db_path
 
 
 if __name__ == '__main__':
