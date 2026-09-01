@@ -29,6 +29,7 @@ from .security import (
     enforce_rate_limit,
 )
 from .storage import (
+    existing_event_ids,
     init_db,
     load_events as load_stored_events,
     load_incident_case,
@@ -67,7 +68,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.8.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.9.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -521,6 +522,9 @@ def _extract_items(payload: Any):
 
 def _deduplicate_ingest(parsed):
     known_ids = {event.id for event in EVENTS}
+    if AI_SIEM_STORAGE == 'sqlite':
+        known_ids.update(existing_event_ids(event.id for event in parsed))
+
     accepted = []
     seen_ids = set(known_ids)
     for event in parsed:

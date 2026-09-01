@@ -114,6 +114,26 @@ def save_events(events: Iterable[Event], path: str | Path | None = None) -> int:
         return conn.total_changes
 
 
+def existing_event_ids(
+    event_ids: Iterable[str],
+    path: str | Path | None = None,
+) -> set[str]:
+    ids = list(dict.fromkeys(str(event_id) for event_id in event_ids if event_id))
+    if not ids:
+        return set()
+
+    init_db(path)
+    existing: set[str] = set()
+    batch_size = 500
+    with connect(path) as conn:
+        for start in range(0, len(ids), batch_size):
+            batch = ids[start:start + batch_size]
+            placeholders = ','.join('?' for _ in batch)
+            query = f'SELECT id FROM events WHERE id IN ({placeholders})'
+            existing.update(row['id'] for row in conn.execute(query, tuple(batch)))
+    return existing
+
+
 def load_events(path: str | Path | None = None, limit: int | None = None) -> list[Event]:
     init_db(path)
     query = 'SELECT event_json FROM events ORDER BY timestamp ASC'
@@ -318,21 +338,17 @@ def stats(path: str | Path | None = None) -> dict:
         total = conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]
         triage_total = conn.execute('SELECT COUNT(*) FROM triage').fetchone()[0]
         incident_case_total = conn.execute('SELECT COUNT(*) FROM incident_cases').fetchone()[0]
-        sources = {
-            row['source']: row['count']
-            for row in conn.execute(
-                'SELECT source, COUNT(*) count FROM events GROUP BY source'
-            )
-        }
-        last = conn.execute(
-            'SELECT timestamp FROM events ORDER BY timestamp DESC LIMIT 1'
-        ).fetchone()
+        source_rows = conn.execute(
+            'SELECT source, COUNT(*) AS count FROM events GROUP BY source ORDER BY count DESC'
+        ).fetchall()
+        event_type_rows = conn.execute(
+            'SELECT event_type, COUNT(*) AS count FROM events GROUP BY event_type ORDER BY count DESC'
+        ).fetchall()
     return {
         'backend': 'sqlite',
-        'db_path': str(_db_path(path)),
         'stored_events': total,
         'stored_triage_records': triage_total,
         'stored_incident_cases': incident_case_total,
-        'source_distribution': sources,
-        'last_event_timestamp': last['timestamp'] if last else None,
+        'source_distribution': {row['source']: row['count'] for row in source_rows},
+        'event_type_distribution': {row['event_type']: row['count'] for row in event_type_rows},
     }
