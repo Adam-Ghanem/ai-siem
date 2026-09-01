@@ -1,5 +1,6 @@
 from __future__ import annotations
 from hashlib import sha256
+from itertools import islice
 from .models import Alert, Incident
 
 W = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
@@ -51,7 +52,8 @@ def correlate(alerts: list[Alert], window_seconds: int = 1800) -> list[Incident]
 
         # Alerts before the anchor are necessarily already assigned. Starting at
         # the next position avoids rescanning an ever-growing historical prefix.
-        for candidate in ordered[anchor_index + 1:]:
+        # islice keeps this a lazy view instead of copying every suffix.
+        for candidate in islice(ordered, anchor_index + 1, None):
             if candidate.timestamp.timestamp() > window_end:
                 break
             if candidate.alert_id in used:
