@@ -39,9 +39,9 @@ def correlate(alerts: list[Alert], window_seconds: int = 1800) -> list[Incident]
 
     used = set()
     incidents = []
-    alerts = sorted(alerts, key=lambda a: a.timestamp)
+    ordered = sorted(alerts, key=lambda a: (a.timestamp, a.alert_id))
 
-    for anchor in alerts:
+    for anchor_index, anchor in enumerate(ordered):
         if anchor.alert_id in used:
             continue
 
@@ -49,11 +49,13 @@ def correlate(alerts: list[Alert], window_seconds: int = 1800) -> list[Incident]
         used.add(anchor.alert_id)
         window_end = anchor.timestamp.timestamp() + window_seconds
 
-        for candidate in alerts:
-            if candidate.alert_id in used:
-                continue
+        # Only later alerts can still be unused. Starting at anchor_index + 1 avoids
+        # repeatedly walking the entire historical prefix for every incident.
+        for candidate in ordered[anchor_index + 1:]:
             if candidate.timestamp.timestamp() > window_end:
                 break
+            if candidate.alert_id in used:
+                continue
             if any(_rel(candidate, member, window_seconds) for member in group):
                 group.append(candidate)
                 used.add(candidate.alert_id)
