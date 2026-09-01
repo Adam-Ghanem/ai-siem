@@ -136,11 +136,20 @@ def existing_event_ids(
 
 def load_events(path: str | Path | None = None, limit: int | None = None) -> list[Event]:
     init_db(path)
-    query = 'SELECT event_json FROM events ORDER BY timestamp ASC'
     params: tuple[int, ...] = ()
     if limit:
-        query += ' LIMIT ?'
+        query = '''
+            SELECT event_json FROM (
+                SELECT event_json, timestamp
+                FROM events
+                ORDER BY timestamp DESC
+                LIMIT ?
+            )
+            ORDER BY timestamp ASC
+        '''
         params = (limit,)
+    else:
+        query = 'SELECT event_json FROM events ORDER BY timestamp ASC'
     with connect(path) as conn:
         return [
             Event.from_dict(json.loads(row['event_json']))
