@@ -39,6 +39,7 @@ from .storage import (
     save_events,
     save_incident_case,
     save_triage,
+    search_alerts as search_stored_alerts,
     search_events as search_stored_events,
 )
 from .storage import stats as storage_stats
@@ -70,7 +71,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.11.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.12.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -319,21 +320,54 @@ def get_alerts(
     asset: str | None = None,
     user: str | None = None,
     src_ip: str | None = None,
+    rule_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
-    data = alerts()
-    if severity:
-        data = [a for a in data if a.severity == severity]
-    if tactic:
-        data = [a for a in data if a.tactic == tactic]
-    if asset:
-        data = [a for a in data if a.asset == asset]
-    if user:
-        data = [a for a in data if a.user == user]
-    if src_ip:
-        data = [a for a in data if a.src_ip == src_ip]
-    return [a.to_dict() for a in _page(data, limit, offset, response)]
+    _validate_page(limit, offset)
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=400, detail='start must not be after end')
+
+    if AI_SIEM_STORAGE == 'sqlite':
+        save_alerts(run_detections(EVENTS))
+        results, total = search_stored_alerts(
+            severity=severity,
+            tactic=tactic,
+            asset=asset,
+            user=user,
+            src_ip=src_ip,
+            rule_id=rule_id,
+            start=start,
+            end=end,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        data = alerts()
+        if severity:
+            data = [alert for alert in data if alert.severity == severity]
+        if tactic:
+            data = [alert for alert in data if alert.tactic == tactic]
+        if asset:
+            data = [alert for alert in data if alert.asset == asset]
+        if user:
+            data = [alert for alert in data if alert.user == user]
+        if src_ip:
+            data = [alert for alert in data if alert.src_ip == src_ip]
+        if rule_id:
+            data = [alert for alert in data if alert.rule_id == rule_id]
+        if start:
+            data = [alert for alert in data if alert.timestamp >= start]
+        if end:
+            data = [alert for alert in data if alert.timestamp <= end]
+        data = sorted(data, key=lambda alert: (alert.timestamp, alert.alert_id), reverse=True)
+        total = len(data)
+        results = data[offset:offset + limit]
+
+    _set_page_headers(total, limit, offset, response)
+    return [alert.to_dict() for alert in results]
 
 
 @app.get('/api/incidents')
