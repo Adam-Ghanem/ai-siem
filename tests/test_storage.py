@@ -42,6 +42,31 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(storage_stats['stored_events'], 1)
             self.assertEqual(storage_stats['source_distribution']['linux_auth'], 1)
 
+    def test_limited_load_returns_most_recent_events_in_chronological_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'hot-window.db'
+            init_db(db)
+            events = [
+                Event.from_dict({
+                    'id': f'evt-hot-{index}',
+                    'timestamp': f'2026-09-01T0{index}:00:00+00:00',
+                    'source': 'linux_auth',
+                    'event_type': 'ssh_login',
+                    'asset': 'host-a',
+                    'message': f'event {index}',
+                    'raw_log': f'event {index}',
+                })
+                for index in range(1, 6)
+            ]
+            self.assertEqual(save_events(events, db), 5)
+
+            loaded = load_events(db, limit=3)
+
+            self.assertEqual(
+                [event.id for event in loaded],
+                ['evt-hot-3', 'evt-hot-4', 'evt-hot-5'],
+            )
+
     def test_search_events_filters_orders_and_counts_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / 'search.db'
