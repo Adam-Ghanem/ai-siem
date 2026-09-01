@@ -1,4 +1,7 @@
-RULES = [
+from .rule_validation import validate_rules
+
+
+RULES = validate_rules([
  {'rule_id':'DET-SSH-001','name':'SSH brute force','severity':'high','confidence':0.86,'tactic':'Credential Access','technique':'T1110','field_equals':{'event_type':'ssh_login','status':'failure'},'threshold':5,'time_window_minutes':5,'group_by':['src_ip']},
  {'rule_id':'DET-SSH-002','name':'Successful login after multiple failures','severity':'high','confidence':0.84,'tactic':'Initial Access','technique':'T1078','field_equals':{'event_type':'ssh_login','status':'success'},'threshold':4,'time_window_minutes':10,'group_by':['src_ip','user']},
  {'rule_id':'DET-SSH-003','name':'SSH password spraying across users','severity':'high','confidence':0.83,'tactic':'Credential Access','technique':'T1110.003','field_equals':{'event_type':'ssh_login','status':'failure'},'threshold':5,'time_window_minutes':10,'group_by':['src_ip'],'distinct_field':'user'},
@@ -6,4 +9,4 @@ RULES = [
  {'rule_id':'DET-NET-001','name':'Internal port scan','severity':'medium','confidence':0.78,'tactic':'Discovery','technique':'T1046','field_equals':{'event_type':'network_connection'},'threshold':8,'time_window_minutes':5,'group_by':['src_ip'],'distinct_field':'dst_ip'},
  {'rule_id':'DET-WIN-001','name':'New admin account creation','severity':'critical','confidence':0.88,'tactic':'Persistence','technique':'T1136','field_equals':{'event_type':'admin_account_change'},'contains':{'message':['admin','administrator','created','added']}},
  {'rule_id':'DET-WAF-001','name':'SQL injection attempt','severity':'high','confidence':0.82,'tactic':'Initial Access','technique':'T1190','field_equals':{'event_type':'http_request'},'regex':{'message':['(?i)union\\s+select','(?i)or\\s+1=1','(?i)sqlmap','(?i)information_schema','(?i)../']}},
-]
+])
