@@ -3,11 +3,13 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.models import Event
+from backend.models import Alert, Event
 from backend.storage import (
     init_db,
+    load_alerts,
     load_events,
     load_triage,
+    save_alerts,
     save_events,
     save_triage,
     search_events,
@@ -124,6 +126,52 @@ class StorageTests(unittest.TestCase):
                 [event.id for event in all_results],
                 ['evt-search-3', 'evt-search-2'],
             )
+
+    def test_alert_round_trip_is_idempotent_and_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'alerts.db'
+            init_db(db)
+            alerts = [
+                Alert(
+                    alert_id='AL-DURABLE-1',
+                    rule_id='DET-TEST-1',
+                    title='First alert',
+                    severity='high',
+                    confidence=0.91,
+                    tactic='Initial Access',
+                    technique='T1078',
+                    timestamp=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
+                    asset='host-a',
+                    user='adam',
+                    src_ip='203.0.113.10',
+                    event_ids=['evt-1'],
+                    evidence=['evidence-1'],
+                    recommended_action='Investigate.',
+                ),
+                Alert(
+                    alert_id='AL-DURABLE-2',
+                    rule_id='DET-TEST-2',
+                    title='Second alert',
+                    severity='critical',
+                    confidence=0.97,
+                    tactic='Execution',
+                    technique='T1059',
+                    timestamp=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+                    asset='host-b',
+                    event_ids=['evt-2'],
+                    evidence=['evidence-2'],
+                    recommended_action='Contain.',
+                ),
+            ]
+
+            self.assertEqual(save_alerts(alerts, db), 2)
+            self.assertEqual(save_alerts(alerts, db), 0)
+            loaded = load_alerts(db)
+
+            self.assertEqual([alert.alert_id for alert in loaded], ['AL-DURABLE-2', 'AL-DURABLE-1'])
+            self.assertEqual(loaded[0].event_ids, ['evt-2'])
+            self.assertEqual(loaded[1].user, 'adam')
+            self.assertEqual(stats(db)['stored_alerts'], 2)
 
     def test_triage_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
