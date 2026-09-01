@@ -129,6 +129,56 @@ class IngestIdempotencyTests(unittest.TestCase):
             finally:
                 storage.DEFAULT_DB_PATH = original_db_path
 
+    def test_sqlite_ingest_rolls_hot_window_instead_of_rejecting_new_events(self):
+        fixtures = [
+            {
+                'id': 'evt-hot-live-001',
+                'timestamp': '2026-09-01T07:00:00+00:00',
+                'source': 'unit-test-agent',
+                'event_type': 'process_start',
+                'asset': 'host-hot-01',
+                'raw_log': 'oldest hot event',
+            },
+            {
+                'id': 'evt-hot-live-002',
+                'timestamp': '2026-09-01T07:05:00+00:00',
+                'source': 'unit-test-agent',
+                'event_type': 'process_start',
+                'asset': 'host-hot-02',
+                'raw_log': 'newer hot event',
+            },
+        ]
+        incoming = {
+            'id': 'evt-hot-live-003',
+            'timestamp': '2026-09-01T07:10:00+00:00',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-hot-03',
+            'raw_log': 'incoming hot event',
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original_db_path = storage.DEFAULT_DB_PATH
+            try:
+                storage.DEFAULT_DB_PATH = Path(tmp) / 'rolling-hot-window.db'
+                main.AI_SIEM_STORAGE = 'sqlite'
+                main.MAX_IN_MEMORY_EVENTS = 2
+                main.EVENTS[:] = main.parse_events(fixtures)
+                self.assertEqual(storage.save_events(main.EVENTS), 2)
+
+                response = self.client.post('/api/ingest', json=incoming, headers=AUTH)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['ingested'], 1)
+                self.assertEqual(response.json()['hot_events'], 2)
+                self.assertEqual(
+                    [event.id for event in main.EVENTS],
+                    ['evt-hot-live-002', 'evt-hot-live-003'],
+                )
+                self.assertEqual(storage.stats()['stored_events'], 3)
+            finally:
+                storage.DEFAULT_DB_PATH = original_db_path
+
 
 if __name__ == '__main__':
     unittest.main()
