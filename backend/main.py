@@ -717,7 +717,7 @@ async def triage(request: Request):
     record = {
         'alert_id': bounded_text('alert_id', ''),
         'action': bounded_text('action', ''),
-        'analyst': bounded_text('analyst', 'frontend', 128),
+        'analyst': getattr(request.state, 'auth_role', 'unknown'),
         'status': 'recorded',
         'request_id': getattr(request.state, 'request_id', None),
         'created_at': datetime.now(timezone.utc).isoformat(),
