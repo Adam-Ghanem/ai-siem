@@ -16,6 +16,13 @@ from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
+from .incident_storage import (
+    incident_snapshots_dirty,
+    load_incident as load_stored_incident,
+    mark_incident_snapshots_dirty,
+    replace_incidents,
+    search_incidents as search_stored_incidents,
+)
 from .investigation import build_investigation
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
@@ -71,7 +78,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.12.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.13.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -139,7 +146,25 @@ def _incident_dict(incident) -> dict[str, Any]:
     return data
 
 
+def _refresh_incident_snapshots():
+    current = [_apply_case(item) for item in correlate(alerts())]
+    replace_incidents(current)
+    return current
+
+
+def _ensure_incident_snapshots() -> None:
+    if AI_SIEM_STORAGE == 'sqlite' and incident_snapshots_dirty():
+        _refresh_incident_snapshots()
+
+
 def incidents():
+    if AI_SIEM_STORAGE == 'sqlite':
+        _ensure_incident_snapshots()
+        _, total = search_stored_incidents(limit=1)
+        if total == 0:
+            return []
+        results, _ = search_stored_incidents(limit=total)
+        return results
     return [_apply_case(item) for item in correlate(alerts())]
 
 
@@ -375,19 +400,42 @@ def get_incidents(
     response: Response,
     status: str | None = None,
     priority: str | None = None,
+    owner: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
+    _validate_page(limit, offset)
+    if AI_SIEM_STORAGE == 'sqlite':
+        _ensure_incident_snapshots()
+        results, total = search_stored_incidents(
+            status=status,
+            priority=priority,
+            owner=owner,
+            limit=limit,
+            offset=offset,
+        )
+        _set_page_headers(total, limit, offset, response)
+        return [_incident_dict(item) for item in results]
+
     data = incidents()
     if status:
         data = [i for i in data if i.status == status]
     if priority:
         data = [i for i in data if i.priority == priority]
+    if owner:
+        data = [i for i in data if i.owner == owner]
     return [_incident_dict(i) for i in _page(data, limit, offset, response)]
 
 
 @app.get('/api/incidents/{incident_id}')
 def get_incident(incident_id: str):
+    if AI_SIEM_STORAGE == 'sqlite':
+        _ensure_incident_snapshots()
+        incident = load_stored_incident(incident_id)
+        if incident is not None:
+            return _incident_dict(incident)
+        raise HTTPException(status_code=404, detail='Incident not found')
+
     for incident in incidents():
         if incident.incident_id == incident_id:
             return _incident_dict(incident)
@@ -396,7 +444,11 @@ def get_incident(incident_id: str):
 
 @app.post('/api/incidents/{incident_id}/case')
 async def update_incident_case(incident_id: str, request: Request):
-    incident = next((item for item in incidents() if item.incident_id == incident_id), None)
+    if AI_SIEM_STORAGE == 'sqlite':
+        _ensure_incident_snapshots()
+        incident = load_stored_incident(incident_id)
+    else:
+        incident = next((item for item in incidents() if item.incident_id == incident_id), None)
     if incident is None:
         raise HTTPException(status_code=404, detail='Incident not found')
 
@@ -451,6 +503,7 @@ async def update_incident_case(incident_id: str, request: Request):
     }
     if AI_SIEM_STORAGE == 'sqlite':
         record = save_incident_case(record)
+        mark_incident_snapshots_dirty()
     else:
         INCIDENT_CASES[incident_id] = dict(record)
 
@@ -466,11 +519,14 @@ async def update_incident_case(incident_id: str, request: Request):
 @app.get('/api/incidents/{incident_id}/investigation')
 def get_incident_investigation(incident_id: str):
     current_alerts = alerts()
-    current_incidents = incidents()
-    incident = next(
-        (item for item in current_incidents if item.incident_id == incident_id),
-        None,
-    )
+    if AI_SIEM_STORAGE == 'sqlite':
+        _ensure_incident_snapshots()
+        incident = load_stored_incident(incident_id)
+    else:
+        incident = next(
+            (item for item in incidents() if item.incident_id == incident_id),
+            None,
+        )
     if incident is None:
         raise HTTPException(status_code=404, detail='Incident not found')
 
@@ -522,7 +578,9 @@ def get_parser_stats():
 @app.get('/api/storage/stats')
 def get_storage_stats():
     if AI_SIEM_STORAGE == 'sqlite':
-        return storage_stats()
+        result = storage_stats()
+        result['incident_snapshots_dirty'] = incident_snapshots_dirty()
+        return result
     return {
         'backend': 'memory',
         'stored_events': len(EVENTS),
@@ -599,6 +657,8 @@ async def ingest(request: Request):
         save_events(accepted)
         _refresh_hot_window(accepted)
         save_alerts(run_detections(EVENTS))
+        if accepted:
+            mark_incident_snapshots_dirty()
     else:
         if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
             raise HTTPException(

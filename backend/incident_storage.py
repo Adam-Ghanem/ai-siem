@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS incidents (
 CREATE INDEX IF NOT EXISTS idx_incidents_priority ON incidents(priority);
 CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
 CREATE INDEX IF NOT EXISTS idx_incidents_owner ON incidents(owner);
+CREATE TABLE IF NOT EXISTS incident_snapshot_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    dirty INTEGER NOT NULL DEFAULT 1
+);
+INSERT OR IGNORE INTO incident_snapshot_state (id, dirty) VALUES (1, 1);
 '''
 
 
@@ -45,11 +50,7 @@ def _incident_from_dict(data: dict) -> Incident:
     )
 
 
-def save_incidents(
-    incidents: Iterable[Incident],
-    path: str | Path | None = None,
-) -> int:
-    _ensure_schema(path)
+def _incident_rows(incidents: Iterable[Incident]) -> list[tuple[str, str, str, str, str]]:
     rows = []
     for incident in incidents:
         data = incident.to_dict()
@@ -60,6 +61,31 @@ def save_incidents(
             incident.owner,
             json.dumps(data, ensure_ascii=False),
         ))
+    return rows
+
+
+def mark_incident_snapshots_dirty(path: str | Path | None = None) -> None:
+    _ensure_schema(path)
+    with connect(path) as conn:
+        conn.execute('UPDATE incident_snapshot_state SET dirty = 1 WHERE id = 1')
+        conn.commit()
+
+
+def incident_snapshots_dirty(path: str | Path | None = None) -> bool:
+    _ensure_schema(path)
+    with connect(path) as conn:
+        row = conn.execute(
+            'SELECT dirty FROM incident_snapshot_state WHERE id = 1'
+        ).fetchone()
+    return row is None or bool(row['dirty'])
+
+
+def save_incidents(
+    incidents: Iterable[Incident],
+    path: str | Path | None = None,
+) -> int:
+    _ensure_schema(path)
+    rows = _incident_rows(incidents)
     if not rows:
         return 0
 
@@ -80,6 +106,30 @@ def save_incidents(
         )
         conn.commit()
         return conn.total_changes - before
+
+
+def replace_incidents(
+    incidents: Iterable[Incident],
+    path: str | Path | None = None,
+) -> int:
+    """Atomically replace the materialized incident snapshot set and mark it fresh."""
+    _ensure_schema(path)
+    rows = _incident_rows(incidents)
+    with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('DELETE FROM incidents')
+        if rows:
+            conn.executemany(
+                '''
+                INSERT INTO incidents
+                (incident_id, priority, status, owner, incident_json)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                rows,
+            )
+        conn.execute('UPDATE incident_snapshot_state SET dirty = 0 WHERE id = 1')
+        conn.commit()
+    return len(rows)
 
 
 def load_incident(
