@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS incident_snapshot_state (
 INSERT OR IGNORE INTO incident_snapshot_state (id, dirty) VALUES (1, 1);
 '''
 
+SNAPSHOT_FRESH = 0
+SNAPSHOT_DIRTY = 1
+SNAPSHOT_REFRESHING = 2
+
 
 def _ensure_schema(path: str | Path | None = None) -> None:
     init_db(path)
@@ -67,17 +71,35 @@ def _incident_rows(incidents: Iterable[Incident]) -> list[tuple[str, str, str, s
 def mark_incident_snapshots_dirty(path: str | Path | None = None) -> None:
     _ensure_schema(path)
     with connect(path) as conn:
-        conn.execute('UPDATE incident_snapshot_state SET dirty = 1 WHERE id = 1')
+        conn.execute(
+            'UPDATE incident_snapshot_state SET dirty = ? WHERE id = 1',
+            (SNAPSHOT_DIRTY,),
+        )
         conn.commit()
 
 
 def incident_snapshots_dirty(path: str | Path | None = None) -> bool:
+    """Return freshness and atomically claim a pending refresh when needed.
+
+    The state machine is fresh -> dirty -> refreshing. A concurrent invalidation
+    can move refreshing back to dirty; replace_incidents then preserves that
+    newer dirty signal instead of accidentally marking stale materialized data
+    fresh.
+    """
     _ensure_schema(path)
     with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
         row = conn.execute(
             'SELECT dirty FROM incident_snapshot_state WHERE id = 1'
         ).fetchone()
-    return row is None or bool(row['dirty'])
+        state = SNAPSHOT_DIRTY if row is None else int(row['dirty'])
+        if state == SNAPSHOT_DIRTY:
+            conn.execute(
+                'UPDATE incident_snapshot_state SET dirty = ? WHERE id = 1',
+                (SNAPSHOT_REFRESHING,),
+            )
+        conn.commit()
+    return state != SNAPSHOT_FRESH
 
 
 def save_incidents(
@@ -112,7 +134,7 @@ def replace_incidents(
     incidents: Iterable[Incident],
     path: str | Path | None = None,
 ) -> int:
-    """Atomically replace the materialized incident snapshot set and mark it fresh."""
+    """Atomically replace snapshots and clear only a claimed refresh state."""
     _ensure_schema(path)
     rows = _incident_rows(incidents)
     with connect(path) as conn:
@@ -127,7 +149,11 @@ def replace_incidents(
                 ''',
                 rows,
             )
-        conn.execute('UPDATE incident_snapshot_state SET dirty = 0 WHERE id = 1')
+        conn.execute(
+            'UPDATE incident_snapshot_state SET dirty = ? '
+            'WHERE id = 1 AND dirty = ?',
+            (SNAPSHOT_FRESH, SNAPSHOT_REFRESHING),
+        )
         conn.commit()
     return len(rows)
 
