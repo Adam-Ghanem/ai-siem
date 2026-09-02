@@ -23,7 +23,7 @@ class AuthIdentityTests(unittest.TestCase):
         AUDIT_PATH.unlink(missing_ok=True)
         self.client = TestClient(main_module.app)
 
-    def test_structured_api_key_records_principal_in_audit(self):
+    def test_structured_api_key_records_principal_in_audit_and_triage(self):
         original_keys = security.API_KEYS
         security.API_KEYS = security._load_api_keys(
             '{"soc-token":{"role":"analyst","principal":"alice@example.com"}}'
@@ -32,12 +32,18 @@ class AuthIdentityTests(unittest.TestCase):
             response = self.client.post(
                 '/api/triage',
                 headers={'Authorization': 'Bearer soc-token'},
-                json={'alert_id': 'AL-IDENTITY', 'action': 'reviewed'},
+                json={
+                    'alert_id': 'AL-IDENTITY',
+                    'action': 'reviewed',
+                    'analyst': 'mallory@example.com',
+                },
             )
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['analyst'], 'alice@example.com')
             audit_text = AUDIT_PATH.read_text(encoding='utf-8')
             self.assertIn('role=analyst', audit_text)
             self.assertIn('principal=alice@example.com', audit_text)
+            self.assertNotIn('mallory@example.com', audit_text)
             self.assertNotIn('soc-token', audit_text)
         finally:
             security.API_KEYS = original_keys
