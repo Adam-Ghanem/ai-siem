@@ -8,16 +8,18 @@ from uuid import uuid4
 def parse_time(value: Any | None) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if not value:
+    if value is None or value == '':
         return datetime.now(timezone.utc)
     text = str(value).strip()
+    if not text:
+        return datetime.now(timezone.utc)
     if text.endswith('Z'):
         text = text[:-1] + '+00:00'
     try:
         dt = datetime.fromisoformat(text)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return datetime.now(timezone.utc)
+    except ValueError as exc:
+        raise ValueError(f'invalid event timestamp: {value!r}') from exc
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 @dataclass
