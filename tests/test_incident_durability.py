@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from backend.correlation import correlate
-from backend.storage import load_incident, save_incidents, search_incidents
+from backend.incident_storage import load_incident, save_incidents, search_incidents
 from tests.helpers import alert
 
 
