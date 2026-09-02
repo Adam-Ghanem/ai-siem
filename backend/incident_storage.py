@@ -134,7 +134,7 @@ def replace_incidents(
     incidents: Iterable[Incident],
     path: str | Path | None = None,
 ) -> int:
-    """Atomically replace snapshots and clear only the refresh that produced them."""
+    """Atomically replace snapshots and clear only a claimed refresh state."""
     _ensure_schema(path)
     rows = _incident_rows(incidents)
     with connect(path) as conn:
