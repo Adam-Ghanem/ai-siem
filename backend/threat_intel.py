@@ -31,6 +31,10 @@ def _bounded_confidence(value: Any) -> int:
 class ThreatIntelIndex:
     def __init__(self, entries: Iterable[dict[str, Any]] | None = None):
         self._entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._networks: dict[int, list[tuple[ipaddress._BaseNetwork, dict[str, Any]]]] = {
+            4: [],
+            6: [],
+        }
         for entry in entries or []:
             self.add(entry)
 
@@ -54,6 +58,15 @@ class ThreatIntelIndex:
         source = str(entry.get('source') or '').strip()
         if not indicator or not source:
             return False
+
+        network = None
+        if '/' in indicator:
+            try:
+                network = ipaddress.ip_network(indicator, strict=False)
+            except ValueError:
+                return False
+            indicator = str(network)
+
         severity = str(entry.get('severity') or 'unknown').strip().lower()
         if severity not in _SEVERITY_ORDER:
             severity = 'unknown'
@@ -62,7 +75,7 @@ class ThreatIntelIndex:
             tags = [tags]
         normalized = {
             'indicator': indicator,
-            'type': str(entry.get('type') or 'unknown').strip().lower(),
+            'type': str(entry.get('type') or ('cidr' if network else 'unknown')).strip().lower(),
             'source': source,
             'confidence': _bounded_confidence(entry.get('confidence')),
             'severity': severity,
@@ -72,11 +85,25 @@ class ThreatIntelIndex:
             'last_seen': str(entry.get('last_seen') or '').strip(),
         }
         self._entries[indicator].append(normalized)
+        if network is not None:
+            self._networks[network.version].append((network, normalized))
         return True
 
     def lookup(self, indicator: Any) -> dict[str, Any]:
         normalized = _normalize_indicator(indicator)
         matches = list(self._entries.get(normalized, []))
+
+        try:
+            address = ipaddress.ip_address(normalized)
+        except ValueError:
+            address = None
+        if address is not None:
+            matches.extend(
+                entry
+                for network, entry in self._networks[address.version]
+                if address in network
+            )
+
         severities = [item['severity'] for item in matches]
         max_severity = max(
             severities,
@@ -91,6 +118,7 @@ class ThreatIntelIndex:
             'max_severity': max_severity,
             'sources': sorted({item['source'] for item in matches}),
             'tags': sorted({tag for item in matches for tag in item['tags']}),
+            'matched_indicators': sorted({item['indicator'] for item in matches}),
             'matches': sorted(matches, key=lambda item: item['confidence'], reverse=True),
         }
 
@@ -118,5 +146,6 @@ class ThreatIntelIndex:
         return {
             'unique_indicators': len(self._entries),
             'entries': len(entries),
+            'network_indicators': sum(len(values) for values in self._networks.values()),
             'sources': sorted({item['source'] for item in entries}),
         }
