@@ -10,7 +10,7 @@ os.environ.setdefault('AI_SIEM_API_KEY', 'test-token')
 os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
-from backend import main
+from backend import main, security
 from backend.security import reset_rate_limit_state
 from backend.storage import load_incident_case, save_incident_case
 
@@ -101,6 +101,29 @@ class IncidentCaseApiTests(unittest.TestCase):
         self.assertEqual(body['owner'], 'soc-l2')
         self.assertEqual(body['case']['disposition'], 'undetermined')
         self.assertEqual(body['case']['note'], 'Escalated for endpoint review')
+
+    def test_case_update_attributes_structured_identity_principal(self):
+        incident = self.client.get('/api/incidents', headers=AUTH).json()[0]
+        captured = {}
+        identity_token = 'principal-test-token'
+        identity = {'role': 'analyst', 'principal': 'alice@example.com'}
+
+        def fake_save(record):
+            captured.update(record)
+            return dict(record)
+
+        with patch.dict(security.API_KEYS, {identity_token: identity}, clear=True), patch.object(
+            main, 'save_incident_case', side_effect=fake_save
+        ), patch.object(main, 'load_incident_case', return_value=None):
+            response = self.client.post(
+                f"/api/incidents/{incident['incident_id']}/case",
+                headers={'Authorization': f'Bearer {identity_token}'},
+                json={'status': 'investigating'},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['updated_by'], 'alice@example.com')
+        self.assertEqual(captured['updated_by'], 'alice@example.com')
 
     def test_case_update_rejects_invalid_status(self):
         incident = self.client.get('/api/incidents', headers=AUTH).json()[0]
