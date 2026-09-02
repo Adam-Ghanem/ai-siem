@@ -91,7 +91,11 @@ def client_ip(request: Request) -> str:
 def audit_log(request: Request, action: str, result: str, detail: str = '') -> None:
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     request_id = getattr(request.state, 'request_id', '')
-    role = getattr(request.state, 'auth_role', '')
+    role = getattr(
+        request.state,
+        'authz_role',
+        getattr(request.state, 'auth_role', ''),
+    )
     principal = getattr(request.state, 'auth_principal', '')
     line = (
         f'timestamp={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
@@ -179,7 +183,8 @@ def enforce_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail='Missing or invalid bearer token')
 
     role, principal = identity
-    request.state.auth_role = role
+    request.state.authz_role = role
+    request.state.auth_role = principal or role
     if principal:
         request.state.auth_principal = principal
     if role not in _required_roles(request):
