@@ -49,6 +49,7 @@ from .storage import (
     save_triage,
     search_alerts as search_stored_alerts,
     search_events as search_stored_events,
+    search_triage as search_stored_triage,
 )
 from .storage import stats as storage_stats
 from .threat_intel import ThreatIntelIndex
@@ -79,7 +80,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.14.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.15.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -696,8 +697,12 @@ async def ingest(request: Request):
 
 @app.get('/api/triage')
 def get_triage(response: Response, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0):
-    data = load_triage(limit=10000) if AI_SIEM_STORAGE == 'sqlite' else list(reversed(TRIAGE))
-    return _page(data, limit, offset, response)
+    _validate_page(limit, offset)
+    if AI_SIEM_STORAGE == 'sqlite':
+        results, total = search_stored_triage(limit=limit, offset=offset)
+        _set_page_headers(total, limit, offset, response)
+        return results
+    return _page(list(reversed(TRIAGE)), limit, offset, response)
 
 
 @app.post('/api/triage')
