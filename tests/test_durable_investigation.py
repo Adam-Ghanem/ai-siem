@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 from fastapi.testclient import TestClient
@@ -39,7 +40,9 @@ class DurableInvestigationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body['related_event_ids'])
-        self.assertNotIn('0 supporting event(s)', body['summary'])
+        match = re.search(r', (\d+) supporting event\(s\),', body['summary'])
+        self.assertIsNotNone(match)
+        self.assertGreater(int(match.group(1)), 0)
 
 
 if __name__ == '__main__':
