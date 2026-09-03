@@ -20,6 +20,7 @@ TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() 
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
+READ_ROLES = {'viewer', 'analyst', 'admin'}
 RATE_LIMIT_WINDOW_SECONDS = 60
 
 
@@ -191,7 +192,7 @@ def _required_roles(request: Request) -> set[str]:
         and request.url.path.endswith('/case')
     ):
         return {'analyst', 'admin'}
-    return VALID_ROLES
+    return READ_ROLES
 
 
 def enforce_auth(request: Request) -> None:
