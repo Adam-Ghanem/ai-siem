@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from .evidence_storage import load_events_by_ids
 from .models import Alert, Anomaly, Event, Incident
 
 _SEVERITY_WEIGHT = {
@@ -45,6 +47,25 @@ def _related_anomalies(
     ]
 
 
+def _hydrate_missing_events(
+    related_event_ids: set[str],
+    events: list[Event],
+) -> list[Event]:
+    related_events = [event for event in events if event.id in related_event_ids]
+    if os.getenv('AI_SIEM_STORAGE', 'sqlite').lower() != 'sqlite':
+        return related_events
+
+    loaded_ids = {event.id for event in related_events}
+    missing_ids = related_event_ids - loaded_ids
+    if not missing_ids:
+        return related_events
+
+    durable_events = load_events_by_ids(missing_ids)
+    by_id = {event.id: event for event in related_events}
+    by_id.update({event.id: event for event in durable_events})
+    return [by_id[event_id] for event_id in sorted(related_event_ids) if event_id in by_id]
+
+
 def build_investigation(
     incident: Incident,
     alerts: list[Alert],
@@ -58,7 +79,7 @@ def build_investigation(
         for alert in related_alerts
         for event_id in alert.event_ids
     }
-    related_events = [event for event in events if event.id in related_event_ids]
+    related_events = _hydrate_missing_events(related_event_ids, events)
     related_anomalies = _related_anomalies(
         incident,
         related_event_ids,
