@@ -1,6 +1,8 @@
 import os
 import unittest
+from collections import deque
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ['AI_SIEM_API_KEY']='test-token'
 os.environ['AI_SIEM_RATE_LIMIT_PER_MINUTE']='1000'
@@ -8,6 +10,7 @@ os.environ['AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE']='1000'
 os.environ['AI_SIEM_AUDIT_LOG']='logs/test-audit.log'
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from backend import main as main_module
 from backend.parser import parse_event, parser_stats
 from backend.detection import run_detections
@@ -43,6 +46,31 @@ class SecurityTests(unittest.TestCase):
             self.assertEqual(self.client.get('/api/health').status_code,429)
         finally:
             security.GLOBAL_RATE_LIMIT_PER_MINUTE=original
+            reset_rate_limit_state()
+
+    def test_stale_rate_limit_keys_are_evicted_before_capacity_check(self):
+        original_capacity = security.MAX_RATE_LIMIT_KEYS
+        security.MAX_RATE_LIMIT_KEYS = 1
+        reset_rate_limit_state()
+        security._GLOBAL_BUCKETS['198.51.100.1'] = deque([0.0])
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/api/events',
+            'raw_path': b'/api/events',
+            'query_string': b'',
+            'headers': [],
+            'scheme': 'http',
+            'server': ('testserver', 80),
+            'client': ('198.51.100.2', 12345),
+        }
+        try:
+            with patch('backend.security.time.time', return_value=61.0):
+                security.enforce_rate_limit(Request(scope))
+            self.assertNotIn('198.51.100.1', security._GLOBAL_BUCKETS)
+            self.assertIn('198.51.100.2', security._GLOBAL_BUCKETS)
+        finally:
+            security.MAX_RATE_LIMIT_KEYS = original_capacity
             reset_rate_limit_state()
 
     def test_audit_logging(self):

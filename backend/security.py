@@ -20,6 +20,7 @@ TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() 
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
+RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 def _load_api_keys(raw: str) -> dict[str, str | dict[str, str]]:
@@ -115,11 +116,29 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
         handle.write(line + '\n')
 
 
-def _check_bucket(bucket: dict[str, Deque[float]], key: str, limit: int) -> bool:
-    now = time.time()
-    values = bucket[key]
-    while values and values[0] < now - 60:
+def _expire_values(values: Deque[float], now: float) -> None:
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    while values and values[0] < cutoff:
         values.popleft()
+
+
+def _prune_bucket(bucket: dict[str, Deque[float]], now: float) -> None:
+    for key in list(bucket):
+        values = bucket[key]
+        _expire_values(values, now)
+        if not values:
+            del bucket[key]
+
+
+def _check_bucket(
+    bucket: dict[str, Deque[float]],
+    key: str,
+    limit: int,
+    now: float | None = None,
+) -> bool:
+    now = time.time() if now is None else now
+    values = bucket[key]
+    _expire_values(values, now)
     if len(values) >= limit:
         return False
     values.append(now)
@@ -129,14 +148,17 @@ def _check_bucket(bucket: dict[str, Deque[float]], key: str, limit: int) -> bool
 def enforce_rate_limit(request: Request) -> None:
     ip = client_ip(request)
     with _BUCKET_LOCK:
+        now = time.time()
+        _prune_bucket(_GLOBAL_BUCKETS, now)
+        _prune_bucket(_INGEST_BUCKETS, now)
         if len(_GLOBAL_BUCKETS) >= MAX_RATE_LIMIT_KEYS and ip not in _GLOBAL_BUCKETS:
             audit_log(request, 'rate_limit', 'key_capacity_exceeded')
             raise HTTPException(status_code=429, detail='Rate limit capacity exceeded')
-        if not _check_bucket(_GLOBAL_BUCKETS, ip, GLOBAL_RATE_LIMIT_PER_MINUTE):
+        if not _check_bucket(_GLOBAL_BUCKETS, ip, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
             audit_log(request, 'rate_limit', 'global_exceeded')
             raise HTTPException(status_code=429, detail='Global rate limit exceeded')
         if request.url.path == '/api/ingest':
-            if not _check_bucket(_INGEST_BUCKETS, ip, INGEST_RATE_LIMIT_PER_MINUTE):
+            if not _check_bucket(_INGEST_BUCKETS, ip, INGEST_RATE_LIMIT_PER_MINUTE, now):
                 audit_log(request, 'rate_limit', 'ingest_exceeded')
                 raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
