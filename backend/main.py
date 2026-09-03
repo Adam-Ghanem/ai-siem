@@ -23,6 +23,7 @@ from .incident_storage import (
     replace_incidents,
     search_incidents as search_stored_incidents,
 )
+from .ingest_storage import save_ingest_batch
 from .investigation import build_investigation
 from .metrics import calculate_metrics
 from .parser import parse_events, parser_stats
@@ -78,7 +79,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.13.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.14.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -633,11 +634,16 @@ def _deduplicate_ingest(parsed):
     return accepted, len(parsed) - len(accepted)
 
 
+def _next_hot_window(accepted):
+    candidate = [*EVENTS, *accepted]
+    candidate.sort(key=lambda event: event.timestamp)
+    if len(candidate) > MAX_IN_MEMORY_EVENTS:
+        candidate = candidate[-MAX_IN_MEMORY_EVENTS:]
+    return candidate
+
+
 def _refresh_hot_window(accepted) -> None:
-    EVENTS.extend(accepted)
-    EVENTS.sort(key=lambda event: event.timestamp)
-    if len(EVENTS) > MAX_IN_MEMORY_EVENTS:
-        del EVENTS[:-MAX_IN_MEMORY_EVENTS]
+    EVENTS[:] = _next_hot_window(accepted)
 
 
 @app.post('/api/ingest')
@@ -654,9 +660,10 @@ async def ingest(request: Request):
     accepted, duplicates_ignored = _deduplicate_ingest(parsed)
 
     if AI_SIEM_STORAGE == 'sqlite':
-        save_events(accepted)
-        _refresh_hot_window(accepted)
-        save_alerts(run_detections(EVENTS))
+        next_hot_window = _next_hot_window(accepted)
+        derived_alerts = run_detections(next_hot_window)
+        save_ingest_batch(accepted, derived_alerts)
+        EVENTS[:] = next_hot_window
         if accepted:
             mark_incident_snapshots_dirty()
     else:
