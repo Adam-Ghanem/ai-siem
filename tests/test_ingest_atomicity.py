@@ -3,10 +3,17 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
+from backend import main, storage
 from backend.ingest_storage import save_ingest_batch
 from backend.models import Alert, Event
+from backend.security import reset_rate_limit_state
 from backend.storage import connect, init_db, load_alerts, load_events
+
+AUTH = {'Authorization': 'Bearer test-token'}
 
 
 class IngestAtomicityTests(unittest.TestCase):
@@ -82,6 +89,37 @@ class IngestAtomicityTests(unittest.TestCase):
 
             self.assertEqual(load_events(db_path), [])
             self.assertEqual(load_alerts(db_path), [])
+
+    def test_detection_failure_does_not_partially_persist_ingest(self):
+        reset_rate_limit_state()
+        client = TestClient(main.app)
+        event = {
+            'id': 'evt-api-atomic-001',
+            'timestamp': '2026-09-03T01:10:00+00:00',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-api-atomic-01',
+            'raw_log': 'api atomic ingest fixture',
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original_db_path = storage.DEFAULT_DB_PATH
+            original_storage = main.AI_SIEM_STORAGE
+            original_events = list(main.EVENTS)
+            try:
+                storage.DEFAULT_DB_PATH = Path(tmp) / 'api-atomic-ingest.db'
+                main.AI_SIEM_STORAGE = 'sqlite'
+                main.EVENTS[:] = []
+                with patch.object(main, 'run_detections', side_effect=RuntimeError('forced detection failure')):
+                    with self.assertRaises(RuntimeError):
+                        client.post('/api/ingest', json=event, headers=AUTH)
+
+                self.assertEqual(load_events(), [])
+                self.assertEqual(main.EVENTS, [])
+            finally:
+                main.EVENTS[:] = original_events
+                main.AI_SIEM_STORAGE = original_storage
+                storage.DEFAULT_DB_PATH = original_db_path
 
 
 if __name__ == '__main__':
