@@ -4,8 +4,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.ingest_storage import save_ingest_batch
 from backend.models import Alert, Event
-from backend.storage import connect, init_db, load_alerts, load_events, save_ingest_batch
+from backend.storage import connect, init_db, load_alerts, load_events
 
 
 class IngestAtomicityTests(unittest.TestCase):
