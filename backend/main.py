@@ -80,7 +80,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.15.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.16.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -275,6 +275,11 @@ def get_events(
 def search_event_history(
     response: Response,
     source: str | None = None,
+    event_type: str | None = None,
+    asset: str | None = None,
+    user: str | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     q: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
@@ -290,6 +295,11 @@ def search_event_history(
     if AI_SIEM_STORAGE == 'sqlite':
         results, total = search_stored_events(
             source=source,
+            event_type=event_type,
+            asset=asset,
+            user=user,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
             query=q,
             start=start,
             end=end,
@@ -300,13 +310,23 @@ def search_event_history(
         data = EVENTS
         if source:
             data = [event for event in data if event.source == source]
+        if event_type:
+            data = [event for event in data if event.event_type == event_type]
+        if asset:
+            data = [event for event in data if event.asset == asset]
+        if user:
+            data = [event for event in data if event.user == user]
+        if src_ip:
+            data = [event for event in data if event.src_ip == src_ip]
+        if dst_ip:
+            data = [event for event in data if event.dst_ip == dst_ip]
         if q:
             data = [event for event in data if q in event.raw_log]
         if start:
             data = [event for event in data if event.timestamp >= start]
         if end:
             data = [event for event in data if event.timestamp <= end]
-        data = sorted(data, key=lambda event: event.timestamp, reverse=True)
+        data = sorted(data, key=lambda event: (event.timestamp, event.id), reverse=True)
         total = len(data)
         results = data[offset:offset + limit]
 
