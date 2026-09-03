@@ -124,6 +124,7 @@ class SecurityTests(unittest.TestCase):
                 self.client.post('/api/ingest', headers=ingestor, json={'logs':['x']}).status_code,
                 200,
             )
+            self.assertEqual(self.client.get('/api/events', headers=ingestor).status_code, 403)
             self.assertEqual(
                 self.client.post('/api/triage', headers=ingestor, json={'alert_id':'AL-RBAC','action':'reviewed'}).status_code,
                 403,
