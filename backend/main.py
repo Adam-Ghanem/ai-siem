@@ -80,7 +80,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.16.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.17.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -109,9 +109,12 @@ def load_events():
         init_db()
         stored = load_stored_events(limit=MAX_IN_MEMORY_EVENTS)
         if stored:
+            if not load_alerts(limit=1):
+                save_alerts(run_detections(stored))
             return stored
         sample = _load_sample_events()
         save_events(sample)
+        save_alerts(run_detections(sample))
         return sample
     return _load_sample_events()
 
@@ -120,11 +123,9 @@ EVENTS = load_events()
 
 
 def alerts():
-    current = run_detections(EVENTS)
     if AI_SIEM_STORAGE == 'sqlite':
-        save_alerts(current)
         return load_alerts()
-    return current
+    return run_detections(EVENTS)
 
 
 def _case_for(incident_id: str) -> dict[str, Any] | None:
@@ -378,7 +379,6 @@ def get_alerts(
         raise HTTPException(status_code=400, detail='start must not be after end')
 
     if AI_SIEM_STORAGE == 'sqlite':
-        save_alerts(run_detections(EVENTS))
         results, total = search_stored_alerts(
             severity=severity,
             tactic=tactic,
