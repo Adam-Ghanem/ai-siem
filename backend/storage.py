@@ -382,6 +382,18 @@ def save_triage(record: dict, path: str | Path | None = None) -> dict:
         }
 
 
+def _triage_row(row: sqlite3.Row) -> dict:
+    return {
+        'triage_id': row['id'],
+        'alert_id': row['alert_id'],
+        'action': row['action'],
+        'analyst': row['analyst'],
+        'status': row['status'],
+        'request_id': row['request_id'] or None,
+        'created_at': row['created_at'],
+    }
+
+
 def load_triage(
     path: str | Path | None = None,
     limit: int | None = None,
@@ -398,18 +410,28 @@ def load_triage(
         query += ' LIMIT ? OFFSET ?'
         params.extend([limit, max(offset, 0)])
     with connect(path) as conn:
-        return [
-            {
-                'triage_id': row['id'],
-                'alert_id': row['alert_id'],
-                'action': row['action'],
-                'analyst': row['analyst'],
-                'status': row['status'],
-                'request_id': row['request_id'] or None,
-                'created_at': row['created_at'],
-            }
-            for row in conn.execute(query, tuple(params))
-        ]
+        return [_triage_row(row) for row in conn.execute(query, tuple(params))]
+
+
+def search_triage(
+    path: str | Path | None = None,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    init_db(path)
+    with connect(path) as conn:
+        total = int(conn.execute('SELECT COUNT(*) FROM triage').fetchone()[0])
+        rows = conn.execute(
+            '''
+            SELECT id, alert_id, action, analyst, status, request_id, created_at
+            FROM triage
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            ''',
+            (limit, max(offset, 0)),
+        )
+        return [_triage_row(row) for row in rows], total
 
 
 def save_incident_case(record: dict, path: str | Path | None = None) -> dict:
