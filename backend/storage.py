@@ -23,10 +23,13 @@ CREATE TABLE IF NOT EXISTS events (
     event_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_timestamp_id ON events(timestamp, id);
 CREATE INDEX IF NOT EXISTS idx_events_source_type ON events(source, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_asset ON events(asset);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user);
 CREATE INDEX IF NOT EXISTS idx_events_src_ip ON events(src_ip);
+CREATE INDEX IF NOT EXISTS idx_events_dst_ip ON events(dst_ip);
 
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY,
@@ -159,16 +162,16 @@ def load_events(path: str | Path | None = None, limit: int | None = None) -> lis
     if limit:
         query = '''
             SELECT event_json FROM (
-                SELECT event_json, timestamp
+                SELECT event_json, timestamp, id
                 FROM events
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, id DESC
                 LIMIT ?
             )
-            ORDER BY timestamp ASC
+            ORDER BY timestamp ASC, id ASC
         '''
         params = (limit,)
     else:
-        query = 'SELECT event_json FROM events ORDER BY timestamp ASC'
+        query = 'SELECT event_json FROM events ORDER BY timestamp ASC, id ASC'
     with connect(path) as conn:
         return [
             Event.from_dict(json.loads(row['event_json']))
@@ -308,6 +311,11 @@ def search_events(
     path: str | Path | None = None,
     *,
     source: str | None = None,
+    event_type: str | None = None,
+    asset: str | None = None,
+    user: str | None = None,
+    src_ip: str | None = None,
+    dst_ip: str | None = None,
     query: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
@@ -318,9 +326,17 @@ def search_events(
     clauses: list[str] = []
     params: list[object] = []
 
-    if source:
-        clauses.append('source = ?')
-        params.append(source)
+    for column, value in (
+        ('source', source),
+        ('event_type', event_type),
+        ('asset', asset),
+        ('user', user),
+        ('src_ip', src_ip),
+        ('dst_ip', dst_ip),
+    ):
+        if value:
+            clauses.append(f'{column} = ?')
+            params.append(value)
     if query:
         clauses.append("raw_log LIKE ? ESCAPE '\\'")
         params.append(f'%{_escape_like(query)}%')
@@ -335,7 +351,7 @@ def search_events(
     count_sql = f'SELECT COUNT(*) FROM events{where}'
     data_sql = (
         f'SELECT event_json FROM events{where} '
-        'ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+        'ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?'
     )
 
     with connect(path) as conn:
