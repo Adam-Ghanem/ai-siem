@@ -11,6 +11,7 @@ os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main, storage
+from backend.parser import parser_stats, reset_parser_stats
 from backend.security import reset_rate_limit_state
 
 AUTH = {'Authorization': 'Bearer test-token'}
@@ -23,6 +24,7 @@ class IngestIdCollisionTests(unittest.TestCase):
 
     def setUp(self):
         reset_rate_limit_state()
+        reset_parser_stats()
         self.original_storage = main.AI_SIEM_STORAGE
         self.original_events = list(main.EVENTS)
         main.AI_SIEM_STORAGE = 'memory'
@@ -30,6 +32,7 @@ class IngestIdCollisionTests(unittest.TestCase):
     def tearDown(self):
         main.EVENTS[:] = self.original_events
         main.AI_SIEM_STORAGE = self.original_storage
+        reset_parser_stats()
 
     def _event(self, raw_log: str):
         return {
@@ -59,6 +62,24 @@ class IngestIdCollisionTests(unittest.TestCase):
         stored = [event for event in main.EVENTS if event.id == 'evt-collision-001']
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0].raw_log, 'original telemetry')
+
+    def test_rejected_collision_does_not_change_parser_metrics(self):
+        first = self.client.post(
+            '/api/ingest',
+            json=self._event('original telemetry'),
+            headers=AUTH,
+        )
+        self.assertEqual(first.status_code, 200)
+        before_collision = parser_stats()
+
+        collision = self.client.post(
+            '/api/ingest',
+            json=self._event('different telemetry'),
+            headers=AUTH,
+        )
+
+        self.assertEqual(collision.status_code, 409)
+        self.assertEqual(parser_stats(), before_collision)
 
     def test_explicit_timestamp_change_is_a_conflict(self):
         event = self._event('same telemetry payload')
