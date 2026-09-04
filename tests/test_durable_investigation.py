@@ -9,7 +9,9 @@ os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main
+from backend.evidence_storage import load_events_by_ids
 from backend.security import reset_rate_limit_state
+from backend.threat_intel import ThreatIntelIndex
 
 AUTH = {'Authorization': 'Bearer test-token'}
 
@@ -43,6 +45,61 @@ class DurableInvestigationTests(unittest.TestCase):
         match = re.search(r', (\d+) supporting event\(s\),', body['summary'])
         self.assertIsNotNone(match)
         self.assertGreater(int(match.group(1)), 0)
+
+    def test_historical_incident_investigation_enriches_durable_event_threat_intel(self):
+        incidents = self.client.get('/api/incidents', headers=AUTH).json()
+        self.assertTrue(incidents)
+        incident_id = incidents[0]['incident_id']
+
+        baseline = self.client.get(
+            f'/api/incidents/{incident_id}/investigation',
+            headers=AUTH,
+        )
+        self.assertEqual(baseline.status_code, 200)
+        related_ids = baseline.json()['related_event_ids']
+        self.assertTrue(related_ids)
+
+        durable_events = load_events_by_ids(related_ids)
+        event = next(
+            (
+                item
+                for item in durable_events
+                if item.src_ip or item.dst_ip
+            ),
+            None,
+        )
+        self.assertIsNotNone(event)
+        indicator = event.src_ip or event.dst_ip
+
+        original_events = main.EVENTS
+        original_threat_intel = main.THREAT_INTEL
+        main.EVENTS = []
+        main.THREAT_INTEL = ThreatIntelIndex(
+            [
+                {
+                    'indicator': indicator,
+                    'type': 'ip',
+                    'source': 'unit-feed',
+                    'confidence': 93,
+                    'severity': 'critical',
+                    'tags': ['durable-investigation-ioc'],
+                }
+            ]
+        )
+        try:
+            response = self.client.get(
+                f'/api/incidents/{incident_id}/investigation',
+                headers=AUTH,
+            )
+        finally:
+            main.EVENTS = original_events
+            main.THREAT_INTEL = original_threat_intel
+
+        self.assertEqual(response.status_code, 200)
+        matches = response.json()['threat_intelligence']
+        self.assertTrue(matches)
+        self.assertEqual(matches[0]['indicator'], indicator)
+        self.assertEqual(matches[0]['source'], 'unit-feed')
 
 
 if __name__ == '__main__':
