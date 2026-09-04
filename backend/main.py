@@ -38,7 +38,6 @@ from .security import (
     enforce_rate_limit,
 )
 from .storage import (
-    existing_event_ids,
     init_db,
     load_alerts,
     load_events as load_stored_events,
@@ -81,7 +80,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.19.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.20.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -516,7 +515,6 @@ async def update_incident_case(incident_id: str, request: Request):
         )
     owner = bounded_text('owner', current['owner'], 128) or 'unassigned'
     note = bounded_text('note', current['note'], 2048)
-
     record = {
         'incident_id': incident_id,
         'status': status,
@@ -649,19 +647,56 @@ def _extract_items(payload: Any):
     return items
 
 
-def _deduplicate_ingest(parsed):
-    known_ids = {event.id for event in EVENTS}
+def _payload_has_explicit_timestamp(item: Any) -> bool:
+    if isinstance(item, dict):
+        return item.get('timestamp') not in (None, '')
+    if isinstance(item, str):
+        raw = item.strip()
+        if raw.startswith('{'):
+            try:
+                decoded = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return True
+            if isinstance(decoded, dict):
+                return decoded.get('timestamp') not in (None, '')
+    return True
+
+
+def _same_ingest_event(previous, event, original_item: Any) -> bool:
+    previous_data = previous.to_dict()
+    event_data = event.to_dict()
+    if previous_data == event_data:
+        return True
+    if _payload_has_explicit_timestamp(original_item):
+        return False
+
+    previous_data.pop('timestamp', None)
+    event_data.pop('timestamp', None)
+    return previous_data == event_data
+
+
+def _deduplicate_ingest(parsed, original_items):
+    existing = {event.id: event for event in EVENTS}
     if AI_SIEM_STORAGE == 'sqlite':
-        known_ids.update(existing_event_ids(event.id for event in parsed))
+        for event in load_events_by_ids(item.id for item in parsed):
+            existing[event.id] = event
 
     accepted = []
-    seen_ids = set(known_ids)
-    for event in parsed:
-        if event.id in seen_ids:
+    duplicates_ignored = 0
+    seen = dict(existing)
+    for event, original_item in zip(parsed, original_items, strict=True):
+        previous = seen.get(event.id)
+        if previous is not None:
+            if not _same_ingest_event(previous, event, original_item):
+                raise HTTPException(
+                    status_code=409,
+                    detail='Event ID conflicts with existing telemetry',
+                )
+            duplicates_ignored += 1
             continue
-        seen_ids.add(event.id)
+        seen[event.id] = event
         accepted.append(event)
-    return accepted, len(parsed) - len(accepted)
+    return accepted, duplicates_ignored
 
 
 def _next_hot_window(accepted):
@@ -687,7 +722,7 @@ async def ingest(request: Request):
     items = _extract_items(payload)
     before_stats = parser_stats()
     parsed = parse_events(items)
-    accepted, duplicates_ignored = _deduplicate_ingest(parsed)
+    accepted, duplicates_ignored = _deduplicate_ingest(parsed, items)
 
     if AI_SIEM_STORAGE == 'sqlite':
         next_hot_window = _next_hot_window(accepted)
