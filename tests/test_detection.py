@@ -71,6 +71,30 @@ class DetectionTests(unittest.TestCase):
         ])
         self.assertFalse(any(a.rule_id == 'DET-WIN-003' for a in alerts))
 
+    def test_windows_event_log_clearing_is_high(self):
+        alerts = run_detections([
+            event(
+                1,
+                source='windows',
+                event_type='windows_event',
+                process_name='wevtutil.exe',
+                command_line='wevtutil.exe cl Security',
+            )
+        ])
+        self.assertTrue(any(a.rule_id == 'DET-WIN-004' and a.severity == 'high' for a in alerts))
+
+    def test_benign_windows_event_log_query_does_not_alert(self):
+        alerts = run_detections([
+            event(
+                1,
+                source='windows',
+                event_type='windows_event',
+                process_name='wevtutil.exe',
+                command_line='wevtutil.exe qe System /c:5 /f:text',
+            )
+        ])
+        self.assertFalse(any(a.rule_id == 'DET-WIN-004' for a in alerts))
+
     def test_rare_external_login_detects_public_172_address(self):
         events = [
             event(1, status='success', src_ip='10.0.0.10', user='alice'),
