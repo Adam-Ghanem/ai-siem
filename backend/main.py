@@ -16,6 +16,7 @@ from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
+from .evidence_storage import load_events_by_ids
 from .incident_storage import (
     incident_snapshots_dirty,
     load_incident as load_stored_incident,
@@ -80,7 +81,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.17.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.18.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -338,6 +339,9 @@ def search_event_history(
 @app.get('/api/events/{event_id}/threat-intel')
 def get_event_threat_intel(event_id: str):
     event = next((item for item in EVENTS if item.id == event_id), None)
+    if event is None and AI_SIEM_STORAGE == 'sqlite':
+        stored = load_events_by_ids([event_id])
+        event = stored[0] if stored else None
     if event is None:
         raise HTTPException(status_code=404, detail='Event not found')
     return {
