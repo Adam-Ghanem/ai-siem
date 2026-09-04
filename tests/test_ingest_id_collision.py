@@ -59,6 +59,27 @@ class IngestIdCollisionTests(unittest.TestCase):
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0].raw_log, 'original telemetry')
 
+    def test_identical_retry_without_client_timestamp_remains_idempotent(self):
+        event = {
+            'id': 'evt-idempotent-no-time-001',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-collision-02',
+            'raw_log': 'timestamp supplied by collector gateway',
+        }
+
+        first = self.client.post('/api/ingest', json=event, headers=AUTH)
+        retry = self.client.post('/api/ingest', json=event, headers=AUTH)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()['ingested'], 0)
+        self.assertEqual(retry.json()['duplicates_ignored'], 1)
+        self.assertEqual(
+            sum(item.id == event['id'] for item in main.EVENTS),
+            1,
+        )
+
     def test_sqlite_rejects_collision_against_persisted_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_db_path = storage.DEFAULT_DB_PATH
