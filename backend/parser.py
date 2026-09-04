@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, re
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,16 @@ def parser_stats():
         stats = dict(PARSER_STATS)
         stats['unknown_samples'] = list(PARSER_STATS['unknown_samples'])
         return stats
+
+@contextmanager
+def parser_stats_transaction():
+    with _STATS_LOCK:
+        before = parser_stats()
+        try:
+            yield
+        except Exception:
+            PARSER_STATS.update(before)
+            raise
 
 def _unknown(raw):
     PARSER_STATS['unknown_events']+=1

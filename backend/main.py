@@ -27,7 +27,7 @@ from .incident_storage import (
 from .ingest_storage import save_ingest_batch
 from .investigation import build_investigation
 from .metrics import calculate_metrics
-from .parser import parse_events, parser_stats
+from .parser import parse_events, parser_stats, parser_stats_transaction
 from .rules import RULES
 from .security import (
     MAX_EVENTS_PER_INGEST,
@@ -721,8 +721,9 @@ async def ingest(request: Request):
 
     items = _extract_items(payload)
     before_stats = parser_stats()
-    parsed = parse_events(items)
-    accepted, duplicates_ignored = _deduplicate_ingest(parsed, items)
+    with parser_stats_transaction():
+        parsed = parse_events(items)
+        accepted, duplicates_ignored = _deduplicate_ingest(parsed, items)
 
     if AI_SIEM_STORAGE == 'sqlite':
         next_hot_window = _next_hot_window(accepted)
