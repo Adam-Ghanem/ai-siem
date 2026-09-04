@@ -71,6 +71,16 @@ class DetectionTests(unittest.TestCase):
         ])
         self.assertFalse(any(a.rule_id == 'DET-WIN-003' for a in alerts))
 
+    def test_rare_external_login_detects_public_172_address(self):
+        events = [
+            event(1, status='success', src_ip='10.0.0.10', user='alice'),
+            event(2, status='success', src_ip='10.0.0.11', user='alice'),
+            event(3, status='success', src_ip='10.0.0.12', user='alice'),
+            event(4, status='success', src_ip='172.200.10.25', user='alice'),
+        ]
+        alerts = run_detections(events)
+        self.assertTrue(any(a.rule_id == 'DET-AI-001' for a in alerts))
+
     def test_benign_events_no_high_or_critical_alerts(self):
         events = [event(i, status='success', src_ip=f'10.0.0.{i}', user=f'user{i}') for i in range(1, 4)]
         alerts = run_detections(events)
