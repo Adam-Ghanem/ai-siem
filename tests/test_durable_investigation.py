@@ -101,7 +101,7 @@ class DurableInvestigationTests(unittest.TestCase):
         matches = response.json()['threat_intelligence']
         self.assertTrue(matches)
         self.assertEqual(matches[0]['indicator'], indicator)
-        self.assertEqual(matches[0]['source'], 'unit-feed')
+        self.assertIn('unit-feed', matches[0]['sources'])
 
 
 if __name__ == '__main__':
