@@ -49,25 +49,27 @@ class DurableInvestigationTests(unittest.TestCase):
     def test_historical_incident_investigation_enriches_durable_event_threat_intel(self):
         incidents = self.client.get('/api/incidents', headers=AUTH).json()
         self.assertTrue(incidents)
-        incident_id = incidents[0]['incident_id']
 
-        baseline = self.client.get(
-            f'/api/incidents/{incident_id}/investigation',
-            headers=AUTH,
-        )
-        self.assertEqual(baseline.status_code, 200)
-        related_ids = baseline.json()['related_event_ids']
-        self.assertTrue(related_ids)
+        incident_id = None
+        event = None
+        for incident in incidents:
+            candidate_id = incident['incident_id']
+            baseline = self.client.get(
+                f'/api/incidents/{candidate_id}/investigation',
+                headers=AUTH,
+            )
+            self.assertEqual(baseline.status_code, 200)
+            durable_events = load_events_by_ids(baseline.json()['related_event_ids'])
+            candidate_event = next(
+                (item for item in durable_events if item.src_ip or item.dst_ip),
+                None,
+            )
+            if candidate_event is not None:
+                incident_id = candidate_id
+                event = candidate_event
+                break
 
-        durable_events = load_events_by_ids(related_ids)
-        event = next(
-            (
-                item
-                for item in durable_events
-                if item.src_ip or item.dst_ip
-            ),
-            None,
-        )
+        self.assertIsNotNone(incident_id)
         self.assertIsNotNone(event)
         indicator = event.src_ip or event.dst_ip
 
