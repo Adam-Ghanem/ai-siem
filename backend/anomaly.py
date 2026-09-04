@@ -2,12 +2,18 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from statistics import mean, pstdev
 from uuid import uuid4
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from .models import Anomaly, Event
 
 MIN_BASELINE_SOURCES = 3
 MAX_RARE_SOURCE_ANOMALIES_PER_USER = 1
 MIN_RARE_SOURCE_SCORE = .80
+PRIVATE_NETWORKS = (
+    ip_network('10.0.0.0/8'),
+    ip_network('172.16.0.0/12'),
+    ip_network('192.168.0.0/16'),
+    ip_network('fc00::/7'),
+)
 
 
 def _z(v, vals):
@@ -23,14 +29,12 @@ def _is_external_ip(value: str | None) -> bool:
         ip = ip_address(value)
     except ValueError:
         return False
-    text = str(ip)
-    private_prefixes = ('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.2', '172.30.', '172.31.', 'fc', 'fd')
     return not (
         ip.is_loopback
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_unspecified
-        or text.startswith(private_prefixes)
+        or any(ip.version == network.version and ip in network for network in PRIVATE_NETWORKS)
     )
 
 
