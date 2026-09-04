@@ -647,18 +647,35 @@ def _extract_items(payload: Any):
     return items
 
 
-def _same_ingest_event(previous, event) -> bool:
+def _payload_has_explicit_timestamp(item: Any) -> bool:
+    if isinstance(item, dict):
+        return item.get('timestamp') not in (None, '')
+    if isinstance(item, str):
+        raw = item.strip()
+        if raw.startswith('{'):
+            try:
+                decoded = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return True
+            if isinstance(decoded, dict):
+                return decoded.get('timestamp') not in (None, '')
+    return True
+
+
+def _same_ingest_event(previous, event, original_item: Any) -> bool:
     previous_data = previous.to_dict()
     event_data = event.to_dict()
     if previous_data == event_data:
         return True
+    if _payload_has_explicit_timestamp(original_item):
+        return False
 
     previous_data.pop('timestamp', None)
     event_data.pop('timestamp', None)
     return previous_data == event_data
 
 
-def _deduplicate_ingest(parsed):
+def _deduplicate_ingest(parsed, original_items):
     existing = {event.id: event for event in EVENTS}
     if AI_SIEM_STORAGE == 'sqlite':
         for event in load_events_by_ids(item.id for item in parsed):
@@ -667,10 +684,10 @@ def _deduplicate_ingest(parsed):
     accepted = []
     duplicates_ignored = 0
     seen = dict(existing)
-    for event in parsed:
+    for event, original_item in zip(parsed, original_items, strict=True):
         previous = seen.get(event.id)
         if previous is not None:
-            if not _same_ingest_event(previous, event):
+            if not _same_ingest_event(previous, event, original_item):
                 raise HTTPException(
                     status_code=409,
                     detail='Event ID conflicts with existing telemetry',
@@ -705,7 +722,7 @@ async def ingest(request: Request):
     items = _extract_items(payload)
     before_stats = parser_stats()
     parsed = parse_events(items)
-    accepted, duplicates_ignored = _deduplicate_ingest(parsed)
+    accepted, duplicates_ignored = _deduplicate_ingest(parsed, items)
 
     if AI_SIEM_STORAGE == 'sqlite':
         next_hot_window = _next_hot_window(accepted)
