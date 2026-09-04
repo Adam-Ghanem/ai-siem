@@ -81,7 +81,7 @@ VALID_INCIDENT_DISPOSITIONS = {
     'duplicate',
 }
 
-app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.18.0')
+app = FastAPI(title='AI-SIEM Live SOC Command Center', version='3.19.0')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -564,6 +564,11 @@ def get_incident_investigation(incident_id: str):
     )
     related_event_ids = set(analysis['related_event_ids'])
     related_events = [event for event in EVENTS if event.id in related_event_ids]
+    if AI_SIEM_STORAGE == 'sqlite':
+        loaded_ids = {event.id for event in related_events}
+        missing_ids = related_event_ids - loaded_ids
+        if missing_ids:
+            related_events.extend(load_events_by_ids(missing_ids))
     analysis['threat_intelligence'] = THREAT_INTEL.enrich_events(related_events)
     analysis['case'] = _case_for(incident_id)
     analysis['grounding']['generated_from'].append('threat_intelligence')
