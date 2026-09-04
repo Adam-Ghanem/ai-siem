@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 os.environ.setdefault('AI_SIEM_API_KEY', 'test-token')
@@ -7,7 +8,9 @@ os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main
+from backend.models import Event
 from backend.security import reset_rate_limit_state
+from backend.storage import save_events
 from backend.threat_intel import ThreatIntelIndex
 
 AUTH = {'Authorization': 'Bearer test-token'}
@@ -198,6 +201,44 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(body['event_id'], event.id)
         self.assertEqual(len(body['matches']), 1)
         self.assertEqual(body['matches'][0]['indicator'], indicator)
+
+    def test_event_threat_intel_loads_durable_event_outside_hot_window(self):
+        event = Event(
+            id='evt-durable-threat-intel-only',
+            timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            source='unit-test',
+            event_type='network',
+            src_ip='198.51.100.77',
+            raw_log='durable historical event',
+        )
+        self.assertFalse(any(item.id == event.id for item in main.EVENTS))
+        save_events([event])
+
+        original = main.THREAT_INTEL
+        main.THREAT_INTEL = ThreatIntelIndex(
+            [
+                {
+                    'indicator': event.src_ip,
+                    'type': 'ip',
+                    'source': 'unit-feed',
+                    'confidence': 88,
+                    'severity': 'high',
+                    'tags': ['historical-ioc'],
+                }
+            ]
+        )
+        try:
+            response = self.client.get(
+                f'/api/events/{event.id}/threat-intel',
+                headers=AUTH,
+            )
+        finally:
+            main.THREAT_INTEL = original
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['event_id'], event.id)
+        self.assertEqual(body['matches'][0]['indicator'], event.src_ip)
 
 if __name__ == '__main__':
     unittest.main()
