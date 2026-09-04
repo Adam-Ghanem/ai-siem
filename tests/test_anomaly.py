@@ -27,6 +27,20 @@ class AnomalyTests(unittest.TestCase):
 
         self.assertTrue(any('Rare source IP' in a.reason for a in anomalies))
 
+    def test_public_172_address_is_not_misclassified_as_private(self):
+        events = [
+            event(1, status='success', user='adam', src_ip='10.0.0.1'),
+            event(2, status='success', user='adam', src_ip='10.0.0.2'),
+            event(3, status='success', user='adam', src_ip='10.0.0.3'),
+            event(4, status='success', user='adam', src_ip='172.200.10.25'),
+        ]
+
+        anomalies = detect_anomalies(events)
+
+        self.assertTrue(
+            any('Rare source IP 172.200.10.25' in a.reason for a in anomalies)
+        )
+
     def test_off_hours_privileged_access(self):
         anomalies = detect_anomalies(
             [
