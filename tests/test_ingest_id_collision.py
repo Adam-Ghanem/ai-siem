@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -58,6 +59,17 @@ class IngestIdCollisionTests(unittest.TestCase):
         stored = [event for event in main.EVENTS if event.id == 'evt-collision-001']
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0].raw_log, 'original telemetry')
+
+    def test_explicit_timestamp_change_is_a_conflict(self):
+        event = self._event('same telemetry payload')
+        first = self.client.post('/api/ingest', json=event, headers=AUTH)
+        changed = deepcopy(event)
+        changed['timestamp'] = '2026-09-04T15:01:00+00:00'
+        collision = self.client.post('/api/ingest', json=changed, headers=AUTH)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(collision.status_code, 409)
+        self.assertEqual(collision.json()['detail'], 'Event ID conflicts with existing telemetry')
 
     def test_identical_retry_without_client_timestamp_remains_idempotent(self):
         event = {
