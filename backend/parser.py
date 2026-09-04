@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json, re
+import threading
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -10,11 +11,17 @@ WIN = re.compile(r'WinEvent\s+Time=(?P<ts>\S+)\s+Host=(?P<asset>\S+)\s+EventID=(
 FW = re.compile(r'(?P<ts>\S+)\s+(?P<asset>\S+)\s+FW\s+action=(?P<action>\S+)\s+src=(?P<src>\S+)\s+dst=(?P<dst>\S+)\s+dpt=(?P<port>\d+)\s+proto=(?P<proto>\S+)\s+msg="(?P<msg>[^"]*)"', re.I)
 WEB = re.compile(r'(?P<src>\S+)\s+\S+\s+\S+\s+\[(?P<ts>[^\]]+)\]\s+"(?P<method>\S+)\s+(?P<path>\S+)\s+(?P<proto>[^"]+)"\s+(?P<status>\d+)\s+\S+\s+"(?P<ua>[^"]*)"')
 PARSER_STATS={'parsed_events':0,'parsing_failed_events':0,'unknown_events':0,'unknown_samples':[]}
+_STATS_LOCK = threading.RLock()
 
 def reset_parser_stats():
-    PARSER_STATS.update({'parsed_events':0,'parsing_failed_events':0,'unknown_events':0,'unknown_samples':[]})
+    with _STATS_LOCK:
+        PARSER_STATS.update({'parsed_events':0,'parsing_failed_events':0,'unknown_events':0,'unknown_samples':[]})
 
-def parser_stats(): return dict(PARSER_STATS)
+def parser_stats():
+    with _STATS_LOCK:
+        stats = dict(PARSER_STATS)
+        stats['unknown_samples'] = list(PARSER_STATS['unknown_samples'])
+        return stats
 
 def _unknown(raw):
     PARSER_STATS['unknown_events']+=1
@@ -40,31 +47,39 @@ def _ssh_status(msg):
     return 'unknown'
 
 def parse_event(item: str | dict[str, Any]) -> Event:
-    try:
-        if isinstance(item, dict):
-            ev=Event.from_dict(item); PARSER_STATS['parsed_events']+=1; return ev
-        raw = str(item).strip()
-        if not raw: raise ValueError('empty log line')
-        if raw.startswith('{'):
-            ev=Event.from_dict(json.loads(raw)); PARSER_STATS['parsed_events']+=1; return ev
-        if m := LINUX.match(raw):
-            msg = m.group('msg'); status = _ssh_status(msg)
-            PARSER_STATS['parsed_events']+=1
-            return Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw)
-        if m := WIN.match(raw):
-            eid=m.group('eid'); et='powershell_execution' if eid=='4104' or 'powershell' in raw.lower() else 'admin_account_change' if eid in {'4720','4732'} else 'windows_event'
-            PARSER_STATS['parsed_events']+=1
-            return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'windows', et, m.group('asset'), m.group('user'), None, None, m.group('proc'), m.group('cmd') or '', 'success', raw, raw)
-        if m := FW.match(raw):
-            PARSER_STATS['parsed_events']+=1
-            return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw)
-        if m := WEB.match(raw):
-            ts = datetime.strptime(m.group('ts').split()[0], '%d/%b/%Y:%H:%M:%S').replace(tzinfo=timezone.utc)
-            PARSER_STATS['parsed_events']+=1
-            return Event(f'evt-{uuid4().hex[:12]}', ts, 'waf', 'http_request', 'web01', None, m.group('src'), None, None, None, m.group('status'), f"{m.group('method')} {m.group('path')} user_agent={m.group('ua')}", raw)
-        return _unknown(raw)
-    except Exception:
-        PARSER_STATS['parsing_failed_events']+=1
-        raise
+    with _STATS_LOCK:
+        try:
+            if isinstance(item, dict):
+                ev=Event.from_dict(item); PARSER_STATS['parsed_events']+=1; return ev
+            raw = str(item).strip()
+            if not raw: raise ValueError('empty log line')
+            if raw.startswith('{'):
+                ev=Event.from_dict(json.loads(raw)); PARSER_STATS['parsed_events']+=1; return ev
+            if m := LINUX.match(raw):
+                msg = m.group('msg'); status = _ssh_status(msg)
+                PARSER_STATS['parsed_events']+=1
+                return Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw)
+            if m := WIN.match(raw):
+                eid=m.group('eid'); et='powershell_execution' if eid=='4104' or 'powershell' in raw.lower() else 'admin_account_change' if eid in {'4720','4732'} else 'windows_event'
+                PARSER_STATS['parsed_events']+=1
+                return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'windows', et, m.group('asset'), m.group('user'), None, None, m.group('proc'), m.group('cmd') or '', 'success', raw, raw)
+            if m := FW.match(raw):
+                PARSER_STATS['parsed_events']+=1
+                return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw)
+            if m := WEB.match(raw):
+                ts = datetime.strptime(m.group('ts').split()[0], '%d/%b/%Y:%H:%M:%S').replace(tzinfo=timezone.utc)
+                PARSER_STATS['parsed_events']+=1
+                return Event(f'evt-{uuid4().hex[:12]}', ts, 'waf', 'http_request', 'web01', None, m.group('src'), None, None, None, m.group('status'), f"{m.group('method')} {m.group('path')} user_agent={m.group('ua')}", raw)
+            return _unknown(raw)
+        except Exception:
+            PARSER_STATS['parsing_failed_events']+=1
+            raise
 
-def parse_events(items): return [parse_event(x) for x in items]
+def parse_events(items):
+    with _STATS_LOCK:
+        before = parser_stats()
+        try:
+            return [parse_event(x) for x in items]
+        except Exception:
+            PARSER_STATS.update(before)
+            raise
