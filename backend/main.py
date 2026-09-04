@@ -647,6 +647,17 @@ def _extract_items(payload: Any):
     return items
 
 
+def _same_ingest_event(previous, event) -> bool:
+    previous_data = previous.to_dict()
+    event_data = event.to_dict()
+    if previous_data == event_data:
+        return True
+
+    previous_data.pop('timestamp', None)
+    event_data.pop('timestamp', None)
+    return previous_data == event_data
+
+
 def _deduplicate_ingest(parsed):
     existing = {event.id: event for event in EVENTS}
     if AI_SIEM_STORAGE == 'sqlite':
@@ -659,7 +670,7 @@ def _deduplicate_ingest(parsed):
     for event in parsed:
         previous = seen.get(event.id)
         if previous is not None:
-            if previous.to_dict() != event.to_dict():
+            if not _same_ingest_event(previous, event):
                 raise HTTPException(
                     status_code=409,
                     detail='Event ID conflicts with existing telemetry',
