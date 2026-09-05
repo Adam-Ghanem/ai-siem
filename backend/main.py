@@ -725,20 +725,20 @@ async def ingest(request: Request):
         parsed = parse_events(items)
         accepted, duplicates_ignored = _deduplicate_ingest(parsed, items)
 
-    if AI_SIEM_STORAGE == 'sqlite':
-        next_hot_window = _next_hot_window(accepted)
-        derived_alerts = run_detections(next_hot_window)
-        save_ingest_batch(accepted, derived_alerts)
-        EVENTS[:] = next_hot_window
-        if accepted:
-            mark_incident_snapshots_dirty()
-    else:
-        if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
-            raise HTTPException(
-                status_code=413,
-                detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
-            )
-        EVENTS.extend(accepted)
+        if AI_SIEM_STORAGE == 'sqlite':
+            next_hot_window = _next_hot_window(accepted)
+            derived_alerts = run_detections(next_hot_window)
+            save_ingest_batch(accepted, derived_alerts)
+            EVENTS[:] = next_hot_window
+            if accepted:
+                mark_incident_snapshots_dirty()
+        else:
+            if len(EVENTS) + len(accepted) > MAX_IN_MEMORY_EVENTS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f'Maximum in-memory event capacity {MAX_IN_MEMORY_EVENTS} reached',
+                )
+            EVENTS.extend(accepted)
 
     after_stats = parser_stats()
     audit_log(
