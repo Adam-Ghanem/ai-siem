@@ -1,8 +1,8 @@
 from __future__ import annotations
-import json, re
+import json, os, re
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 from .models import Event, parse_time
@@ -13,6 +13,10 @@ FW = re.compile(r'(?P<ts>\S+)\s+(?P<asset>\S+)\s+FW\s+action=(?P<action>\S+)\s+s
 WEB = re.compile(r'(?P<src>\S+)\s+\S+\s+\S+\s+\[(?P<ts>[^\]]+)\]\s+"(?P<method>\S+)\s+(?P<path>\S+)\s+(?P<proto>[^"]+)"\s+(?P<status>\d+)\s+\S+\s+"(?P<ua>[^"]*)"')
 PARSER_STATS={'parsed_events':0,'parsing_failed_events':0,'unknown_events':0,'unknown_samples':[]}
 _STATS_LOCK = threading.RLock()
+MAX_EVENT_FUTURE_SKEW_SECONDS = max(
+    0,
+    int(os.getenv('AI_SIEM_MAX_EVENT_FUTURE_SKEW_SECONDS', '300')),
+)
 
 def reset_parser_stats():
     with _STATS_LOCK:
@@ -57,30 +61,44 @@ def _ssh_status(msg):
     if lowered.startswith('failed '): return 'failure'
     return 'unknown'
 
+def _validate_event_timestamp(event: Event) -> Event:
+    latest_allowed = datetime.now(timezone.utc) + timedelta(
+        seconds=MAX_EVENT_FUTURE_SKEW_SECONDS
+    )
+    if event.timestamp > latest_allowed:
+        raise ValueError(
+            'event timestamp is too far in the future; '
+            f'maximum allowed clock skew is {MAX_EVENT_FUTURE_SKEW_SECONDS} seconds'
+        )
+    return event
+
 def parse_event(item: str | dict[str, Any]) -> Event:
     with _STATS_LOCK:
         try:
             if isinstance(item, dict):
-                ev=Event.from_dict(item); PARSER_STATS['parsed_events']+=1; return ev
+                ev=_validate_event_timestamp(Event.from_dict(item)); PARSER_STATS['parsed_events']+=1; return ev
             raw = str(item).strip()
             if not raw: raise ValueError('empty log line')
             if raw.startswith('{'):
-                ev=Event.from_dict(json.loads(raw)); PARSER_STATS['parsed_events']+=1; return ev
+                ev=_validate_event_timestamp(Event.from_dict(json.loads(raw))); PARSER_STATS['parsed_events']+=1; return ev
             if m := LINUX.match(raw):
                 msg = m.group('msg'); status = _ssh_status(msg)
                 PARSER_STATS['parsed_events']+=1
                 return Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw)
             if m := WIN.match(raw):
                 eid=m.group('eid'); et='powershell_execution' if eid=='4104' or 'powershell' in raw.lower() else 'admin_account_change' if eid in {'4720','4732'} else 'windows_event'
+                ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'windows', et, m.group('asset'), m.group('user'), None, None, m.group('proc'), m.group('cmd') or '', 'success', raw, raw))
                 PARSER_STATS['parsed_events']+=1
-                return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'windows', et, m.group('asset'), m.group('user'), None, None, m.group('proc'), m.group('cmd') or '', 'success', raw, raw)
+                return ev
             if m := FW.match(raw):
+                ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw))
                 PARSER_STATS['parsed_events']+=1
-                return Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw)
+                return ev
             if m := WEB.match(raw):
                 ts = datetime.strptime(m.group('ts').split()[0], '%d/%b/%Y:%H:%M:%S').replace(tzinfo=timezone.utc)
+                ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', ts, 'waf', 'http_request', 'web01', None, m.group('src'), None, None, None, m.group('status'), f"{m.group('method')} {m.group('path')} user_agent={m.group('ua')}", raw))
                 PARSER_STATS['parsed_events']+=1
-                return Event(f'evt-{uuid4().hex[:12]}', ts, 'waf', 'http_request', 'web01', None, m.group('src'), None, None, None, m.group('status'), f"{m.group('method')} {m.group('path')} user_agent={m.group('ua')}", raw)
+                return ev
             return _unknown(raw)
         except Exception:
             PARSER_STATS['parsing_failed_events']+=1
