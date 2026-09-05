@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import secrets
@@ -146,24 +147,6 @@ def _check_bucket(
     return True
 
 
-def enforce_rate_limit(request: Request) -> None:
-    ip = client_ip(request)
-    with _BUCKET_LOCK:
-        now = time.time()
-        _prune_bucket(_GLOBAL_BUCKETS, now)
-        _prune_bucket(_INGEST_BUCKETS, now)
-        if len(_GLOBAL_BUCKETS) >= MAX_RATE_LIMIT_KEYS and ip not in _GLOBAL_BUCKETS:
-            audit_log(request, 'rate_limit', 'key_capacity_exceeded')
-            raise HTTPException(status_code=429, detail='Rate limit capacity exceeded')
-        if not _check_bucket(_GLOBAL_BUCKETS, ip, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
-            audit_log(request, 'rate_limit', 'global_exceeded')
-            raise HTTPException(status_code=429, detail='Global rate limit exceeded')
-        if request.url.path == '/api/ingest':
-            if not _check_bucket(_INGEST_BUCKETS, ip, INGEST_RATE_LIMIT_PER_MINUTE, now):
-                audit_log(request, 'rate_limit', 'ingest_exceeded')
-                raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
-
-
 def _resolve_identity(token: str) -> tuple[str, str] | None:
     for configured_token, identity in API_KEYS.items():
         if not secrets.compare_digest(token, configured_token):
@@ -174,6 +157,38 @@ def _resolve_identity(token: str) -> tuple[str, str] | None:
     if API_KEY and secrets.compare_digest(token, API_KEY):
         return 'admin', ''
     return None
+
+
+def _rate_limit_key(request: Request) -> str:
+    authorization = request.headers.get('authorization', '')
+    scheme, _, token = authorization.partition(' ')
+    if scheme.lower() == 'bearer' and token:
+        identity = _resolve_identity(token)
+        if identity is not None:
+            _, principal = identity
+            if principal:
+                return f'principal:{principal}'
+            token_digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+            return f'token:{token_digest}'
+    return client_ip(request)
+
+
+def enforce_rate_limit(request: Request) -> None:
+    key = _rate_limit_key(request)
+    with _BUCKET_LOCK:
+        now = time.time()
+        _prune_bucket(_GLOBAL_BUCKETS, now)
+        _prune_bucket(_INGEST_BUCKETS, now)
+        if len(_GLOBAL_BUCKETS) >= MAX_RATE_LIMIT_KEYS and key not in _GLOBAL_BUCKETS:
+            audit_log(request, 'rate_limit', 'key_capacity_exceeded')
+            raise HTTPException(status_code=429, detail='Rate limit capacity exceeded')
+        if not _check_bucket(_GLOBAL_BUCKETS, key, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
+            audit_log(request, 'rate_limit', 'global_exceeded')
+            raise HTTPException(status_code=429, detail='Global rate limit exceeded')
+        if request.url.path == '/api/ingest':
+            if not _check_bucket(_INGEST_BUCKETS, key, INGEST_RATE_LIMIT_PER_MINUTE, now):
+                audit_log(request, 'rate_limit', 'ingest_exceeded')
+                raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
 
 
 def _resolve_role(token: str) -> str | None:
