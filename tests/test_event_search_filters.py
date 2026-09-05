@@ -65,6 +65,29 @@ class EventSearchFilterTests(unittest.TestCase):
                 ['evt-filter-2', 'evt-filter-1'],
             )
 
+    def test_search_events_query_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'events.db'
+            init_db(db)
+            self.assertEqual(
+                save_events([
+                    Event.from_dict({
+                        'id': 'evt-case-1',
+                        'timestamp': '2026-09-03T11:00:00+00:00',
+                        'source': 'windows',
+                        'event_type': 'powershell_execution',
+                        'asset': 'host-a',
+                        'raw_log': 'PowerShell -EncodedCommand AAAA',
+                    }),
+                ], db),
+                1,
+            )
+
+            results, total = search_events(db, query='powershell', limit=10, offset=0)
+
+            self.assertEqual(total, 1)
+            self.assertEqual([event.id for event in results], ['evt-case-1'])
+
 
 if __name__ == '__main__':
     unittest.main()
