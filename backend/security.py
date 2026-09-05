@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Deque
+from urllib.parse import quote
 
 from fastapi import HTTPException, Request
 
@@ -81,6 +82,10 @@ def _safe_text(value: object, max_length: int = 256) -> str:
     return text[:max_length]
 
 
+def _audit_value(value: object, max_length: int = 256) -> str:
+    return quote(_safe_text(value, max_length), safe='-._~:@/')
+
+
 def client_ip(request: Request) -> str:
     if TRUST_PROXY_HEADERS:
         forwarded = request.headers.get('x-forwarded-for')
@@ -102,18 +107,18 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
     principal = getattr(request.state, 'auth_principal', '')
     line = (
         f'timestamp={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
-        f'request_id={_safe_text(request_id, 64)} '
-        f'client_ip={_safe_text(client_ip(request), 128)} '
-        f'endpoint={_safe_text(request.url.path, 256)} '
-        f'action={_safe_text(action, 64)} '
-        f'result={_safe_text(result, 64)}'
+        f'request_id={_audit_value(request_id, 64)} '
+        f'client_ip={_audit_value(client_ip(request), 128)} '
+        f'endpoint={_audit_value(request.url.path, 256)} '
+        f'action={_audit_value(action, 64)} '
+        f'result={_audit_value(result, 64)}'
     )
     if role:
-        line += f' role={_safe_text(role, 32)}'
+        line += f' role={_audit_value(role, 32)}'
     if principal:
-        line += f' principal={_safe_text(principal, 128)}'
+        line += f' principal={_audit_value(principal, 128)}'
     if detail:
-        line += f' detail={_safe_text(detail)}'
+        line += f' detail={_audit_value(detail)}'
     with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
         handle.write(line + '\n')
 
