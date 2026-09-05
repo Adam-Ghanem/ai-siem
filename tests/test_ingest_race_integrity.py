@@ -2,10 +2,17 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
-from backend.ingest_storage import save_ingest_batch
+from fastapi.testclient import TestClient
+
+from backend import main, storage
+from backend.ingest_storage import IngestCommitRace, save_ingest_batch
 from backend.models import Alert, Event
+from backend.security import reset_rate_limit_state
 from backend.storage import load_alerts, load_events, save_events
+
+AUTH = {'Authorization': 'Bearer test-token'}
 
 
 class IngestRaceIntegrityTests(unittest.TestCase):
@@ -51,6 +58,53 @@ class IngestRaceIntegrityTests(unittest.TestCase):
             self.assertEqual(len(stored), 1)
             self.assertEqual(stored[0].raw_log, 'authoritative telemetry')
             self.assertEqual(load_alerts(db_path), [])
+
+    def test_api_rechecks_deduplication_after_commit_race(self):
+        reset_rate_limit_state()
+        client = TestClient(main.app)
+        event = {
+            'id': 'evt-race-retry-001',
+            'timestamp': '2026-09-05T15:05:00+00:00',
+            'source': 'unit-test-agent',
+            'event_type': 'process_start',
+            'asset': 'host-race-retry-01',
+            'raw_log': 'same collector retry telemetry',
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original_db_path = storage.DEFAULT_DB_PATH
+            original_storage = main.AI_SIEM_STORAGE
+            original_events = list(main.EVENTS)
+            real_save_ingest_batch = save_ingest_batch
+            first_attempt = True
+
+            def race_once(events, alerts, path=None):
+                nonlocal first_attempt
+                events = list(events)
+                alerts = list(alerts)
+                if first_attempt:
+                    first_attempt = False
+                    self.assertEqual(storage.save_events(events, path), 1)
+                    raise IngestCommitRace('simulated concurrent commit')
+                return real_save_ingest_batch(events, alerts, path)
+
+            try:
+                storage.DEFAULT_DB_PATH = Path(tmp) / 'api-ingest-race.db'
+                main.AI_SIEM_STORAGE = 'sqlite'
+                main.EVENTS[:] = []
+                with patch.object(main, 'save_ingest_batch', side_effect=race_once):
+                    response = client.post('/api/ingest', json=event, headers=AUTH)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['ingested'], 0)
+                self.assertEqual(response.json()['duplicates_ignored'], 1)
+                persisted = storage.load_events(limit=10)
+                self.assertEqual(len(persisted), 1)
+                self.assertEqual(persisted[0].raw_log, event['raw_log'])
+            finally:
+                main.EVENTS[:] = original_events
+                main.AI_SIEM_STORAGE = original_storage
+                storage.DEFAULT_DB_PATH = original_db_path
 
 
 if __name__ == '__main__':
