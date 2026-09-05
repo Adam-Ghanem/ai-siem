@@ -322,7 +322,8 @@ def search_event_history(
         if dst_ip:
             data = [event for event in data if event.dst_ip == dst_ip]
         if q:
-            data = [event for event in data if q in event.raw_log]
+            needle = q.casefold()
+            data = [event for event in data if needle in event.raw_log.casefold()]
         if start:
             data = [event for event in data if event.timestamp >= start]
         if end:
