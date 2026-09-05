@@ -39,6 +39,26 @@ class IngestValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('invalid event timestamp', response.json()['detail'])
 
+    def test_far_future_explicit_timestamp_is_rejected_as_client_error(self):
+        response = self.client.post(
+            '/api/ingest',
+            headers=AUTH,
+            json={
+                'events': [
+                    {
+                        'id': 'evt-future-ingest-time-001',
+                        'timestamp': '2099-01-01T00:00:00Z',
+                        'source': 'unit-test',
+                        'event_type': 'authentication',
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('future', response.json()['detail'].lower())
+        self.assertEqual(parser_stats()['parsed_events'], 0)
+
     def test_rejected_batch_does_not_mutate_parser_statistics(self):
         response = self.client.post(
             '/api/ingest',
