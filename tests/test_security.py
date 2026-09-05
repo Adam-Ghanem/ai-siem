@@ -136,6 +136,23 @@ class SecurityTests(unittest.TestCase):
         finally:
             security.API_KEYS = original_keys
 
+    def test_unmapped_mutating_route_requires_admin(self):
+        original_keys = security.API_KEYS
+        security.API_KEYS = {
+            'viewer-token': 'viewer',
+            'analyst-token': 'analyst',
+            'admin-token': 'admin',
+        }
+        try:
+            viewer = {'Authorization': 'Bearer viewer-token'}
+            analyst = {'Authorization': 'Bearer analyst-token'}
+            admin = {'Authorization': 'Bearer admin-token'}
+            self.assertEqual(self.client.post('/api/future-write', headers=viewer).status_code, 403)
+            self.assertEqual(self.client.post('/api/future-write', headers=analyst).status_code, 403)
+            self.assertEqual(self.client.post('/api/future-write', headers=admin).status_code, 404)
+        finally:
+            security.API_KEYS = original_keys
+
     def test_api_key_role_configuration_validation(self):
         self.assertEqual(
             security._load_api_keys('{"read-token":"viewer","soc-token":"analyst"}'),
