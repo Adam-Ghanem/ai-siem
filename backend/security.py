@@ -207,7 +207,9 @@ def _required_roles(request: Request) -> set[str]:
         and request.url.path.endswith('/case')
     ):
         return {'analyst', 'admin'}
-    return READ_ROLES
+    if request.method in {'GET', 'HEAD'}:
+        return READ_ROLES
+    return {'admin'}
 
 
 def enforce_auth(request: Request) -> None:
