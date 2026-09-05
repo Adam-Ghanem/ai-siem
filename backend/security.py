@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -19,11 +20,30 @@ MAX_RAW_LOG_BYTES = int(os.getenv('AI_SIEM_MAX_RAW_LOG_BYTES', str(10 * 1024)))
 MAX_IN_MEMORY_EVENTS = int(os.getenv('AI_SIEM_MAX_IN_MEMORY_EVENTS', '10000'))
 MAX_RATE_LIMIT_KEYS = int(os.getenv('AI_SIEM_MAX_RATE_LIMIT_KEYS', '10000'))
 TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() == 'true'
+TRUSTED_PROXY_CIDRS = os.getenv('AI_SIEM_TRUSTED_PROXY_CIDRS', '').strip()
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
 READ_ROLES = {'viewer', 'analyst', 'admin'}
 RATE_LIMIT_WINDOW_SECONDS = 60
+
+
+def _load_trusted_proxy_networks(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks = []
+    for value in raw.split(','):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(
+                'AI_SIEM_TRUSTED_PROXY_CIDRS must contain valid comma-separated CIDRs'
+            ) from exc
+    return tuple(networks)
+
+
+TRUSTED_PROXY_NETWORKS = _load_trusted_proxy_networks(TRUSTED_PROXY_CIDRS)
 
 
 def _load_api_keys(raw: str) -> dict[str, str | dict[str, str]]:
@@ -86,14 +106,25 @@ def _audit_value(value: object, max_length: int = 256) -> str:
     return quote(_safe_text(value, max_length), safe='-._~:@/')
 
 
+def _trusted_proxy_peer(host: str) -> bool:
+    if not TRUSTED_PROXY_NETWORKS:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(address in network for network in TRUSTED_PROXY_NETWORKS)
+
+
 def client_ip(request: Request) -> str:
-    if TRUST_PROXY_HEADERS:
+    peer = request.client.host if request.client else 'unknown'
+    if TRUST_PROXY_HEADERS and _trusted_proxy_peer(peer):
         forwarded = request.headers.get('x-forwarded-for')
         if forwarded:
             candidate = forwarded.split(',')[0].strip()
             if candidate:
                 return _safe_text(candidate, 128)
-    return _safe_text(request.client.host if request.client else 'unknown', 128)
+    return _safe_text(peer, 128)
 
 
 def audit_log(request: Request, action: str, result: str, detail: str = '') -> None:
