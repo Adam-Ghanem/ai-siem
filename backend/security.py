@@ -170,7 +170,7 @@ def _rate_limit_key(request: Request) -> str:
                 return f'principal:{principal}'
             token_digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
             return f'token:{token_digest}'
-    return f'ip:{client_ip(request)}'
+    return client_ip(request)
 
 
 def enforce_rate_limit(request: Request) -> None:
