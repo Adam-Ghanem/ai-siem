@@ -128,6 +128,16 @@ class AuditIntegrityTests(unittest.TestCase):
         lines = AUDIT_PATH.read_text(encoding='utf-8').splitlines()
         self.assertEqual(len(lines), 2)
 
+    def test_previous_hmac_key_config_requires_json_string_array(self):
+        self.assertEqual(
+            security._load_audit_hmac_previous_keys('["old-key", "older-key"]'),
+            (b'old-key', b'older-key'),
+        )
+        with self.assertRaises(RuntimeError):
+            security._load_audit_hmac_previous_keys('{"old": "key"}')
+        with self.assertRaises(RuntimeError):
+            security._load_audit_hmac_previous_keys('["old-key", ""]')
+
 
 if __name__ == '__main__':
     unittest.main()
