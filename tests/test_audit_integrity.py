@@ -1,5 +1,7 @@
 import hashlib
+import multiprocessing
 import os
+import time
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,38 @@ import backend.security as security
 
 
 AUDIT_PATH = Path('logs/test-audit-integrity.log')
+
+
+def _concurrent_audit_writer(path: str, request_id: str, start_event) -> None:
+    security.AUDIT_LOG_PATH = Path(path)
+    security.AUDIT_HMAC_KEY = b''
+    security.AUDIT_HMAC_PREVIOUS_KEYS = ()
+    security._AUDIT_HEAD_CACHE.clear()
+
+    original_current_head = security._current_audit_head
+
+    def delayed_current_head(audit_path: Path) -> str:
+        head = original_current_head(audit_path)
+        time.sleep(0.3)
+        return head
+
+    security._current_audit_head = delayed_current_head
+    scope = {
+        'type': 'http',
+        'method': 'POST',
+        'path': '/api/triage',
+        'raw_path': b'/api/triage',
+        'query_string': b'',
+        'headers': [],
+        'scheme': 'http',
+        'server': ('testserver', 80),
+        'client': ('198.51.100.10', 12345),
+    }
+    request = Request(scope)
+    request.state.request_id = request_id
+    request.state.authz_role = 'analyst'
+    start_event.wait(timeout=5)
+    security.audit_log(request, 'triage', 'success', request_id)
 
 
 class AuditIntegrityTests(unittest.TestCase):
@@ -70,6 +104,28 @@ class AuditIntegrityTests(unittest.TestCase):
         second_fields = dict(field.split('=', 1) for field in lines[1].split())
         self.assertEqual(first_fields['prev_hash'], '0' * 64)
         self.assertEqual(second_fields['prev_hash'], first_fields['hash'])
+        self.assertTrue(security.verify_audit_log(AUDIT_PATH))
+
+    def test_concurrent_process_writers_preserve_single_audit_chain(self):
+        start_event = multiprocessing.Event()
+        writers = [
+            multiprocessing.Process(
+                target=_concurrent_audit_writer,
+                args=(str(AUDIT_PATH), f'worker-{index}', start_event),
+            )
+            for index in range(2)
+        ]
+        for writer in writers:
+            writer.start()
+        start_event.set()
+        for writer in writers:
+            writer.join(timeout=5)
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(writer.exitcode, 0)
+
+        security._AUDIT_HEAD_CACHE.clear()
+        lines = AUDIT_PATH.read_text(encoding='utf-8').splitlines()
+        self.assertEqual(len(lines), 2)
         self.assertTrue(security.verify_audit_log(AUDIT_PATH))
 
     def test_audit_verifier_detects_modified_record(self):

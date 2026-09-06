@@ -7,11 +7,17 @@ import secrets
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Deque
 from urllib.parse import quote
 
 from fastapi import HTTPException, Request
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production container is POSIX/Linux
+    fcntl = None
 
 
 def _load_audit_hmac_previous_keys(raw: str) -> tuple[bytes, ...]:
@@ -161,6 +167,22 @@ def _audit_record_mac(previous_hash: str, record: str, key: bytes | None = None)
     ).hexdigest()
 
 
+@contextmanager
+def _audit_file_lock(path: Path):
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = path.with_name(f'.{path.name}.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+', encoding='utf-8') as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _audit_chain_state(path: Path) -> tuple[bool, str]:
     if not path.exists():
         return True, AUDIT_GENESIS_HASH
@@ -217,7 +239,10 @@ def _audit_chain_state(path: Path) -> tuple[bool, str]:
 
 
 def verify_audit_log(path: Path | None = None) -> bool:
-    valid, _ = _audit_chain_state(path or AUDIT_LOG_PATH)
+    target = path or AUDIT_LOG_PATH
+    with _AUDIT_LOCK:
+        with _audit_file_lock(target):
+            valid, _ = _audit_chain_state(target)
     return valid
 
 
@@ -284,22 +309,23 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
         line += f' detail={_audit_value(detail)}'
 
     with _AUDIT_LOCK:
-        previous_hash = _current_audit_head(AUDIT_LOG_PATH)
-        record = line
-        if AUDIT_HMAC_KEY:
-            record += ' integrity=hmac-sha256'
-        record_hash = _audit_record_hash(previous_hash, record)
-        chained_line = f'{record} prev_hash={previous_hash} hash={record_hash}'
-        if AUDIT_HMAC_KEY:
-            chained_line += f' mac={_audit_record_mac(previous_hash, record)}'
-        with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
-            handle.write(chained_line + '\n')
-        stat = AUDIT_LOG_PATH.stat()
-        _AUDIT_HEAD_CACHE[AUDIT_LOG_PATH] = (
-            stat.st_size,
-            stat.st_mtime_ns,
-            record_hash,
-        )
+        with _audit_file_lock(AUDIT_LOG_PATH):
+            previous_hash = _current_audit_head(AUDIT_LOG_PATH)
+            record = line
+            if AUDIT_HMAC_KEY:
+                record += ' integrity=hmac-sha256'
+            record_hash = _audit_record_hash(previous_hash, record)
+            chained_line = f'{record} prev_hash={previous_hash} hash={record_hash}'
+            if AUDIT_HMAC_KEY:
+                chained_line += f' mac={_audit_record_mac(previous_hash, record)}'
+            with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
+                handle.write(chained_line + '\n')
+            stat = AUDIT_LOG_PATH.stat()
+            _AUDIT_HEAD_CACHE[AUDIT_LOG_PATH] = (
+                stat.st_size,
+                stat.st_mtime_ns,
+                record_hash,
+            )
 
 
 def _expire_values(values: Deque[float], now: float) -> None:
