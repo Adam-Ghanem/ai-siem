@@ -88,8 +88,9 @@ class AuditIntegrityTests(unittest.TestCase):
             field.split('=', 1)
             for field in AUDIT_PATH.read_text(encoding='utf-8').strip().split()
         )
-        self.assertEqual(fields['integrity'], 'hmac-sha256')
-        self.assertEqual(len(fields['mac']), 64)
+        self.assertIn('integrity', fields)
+        self.assertEqual(fields.get('integrity'), 'hmac-sha256')
+        self.assertEqual(len(fields.get('mac', '')), 64)
         self.assertTrue(security.verify_audit_log(AUDIT_PATH))
 
     def test_hmac_verifier_rejects_sha_rewrite_without_signing_key(self):
