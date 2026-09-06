@@ -450,7 +450,12 @@ def search_triage(
         return [_triage_row(row) for row in rows], total
 
 
-def save_incident_case(record: dict, path: str | Path | None = None) -> dict:
+def save_incident_case(
+    record: dict,
+    path: str | Path | None = None,
+    *,
+    expected_updated_at: str | None = None,
+) -> dict:
     init_db(path)
     updated_at = record.get('updated_at') or datetime.now(timezone.utc).isoformat()
     values = (
@@ -464,6 +469,15 @@ def save_incident_case(record: dict, path: str | Path | None = None) -> dict:
         updated_at,
     )
     with connect(path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if expected_updated_at is not None:
+            current = conn.execute(
+                'SELECT updated_at FROM incident_cases WHERE incident_id = ?',
+                (values[0],),
+            ).fetchone()
+            if current is None or current['updated_at'] != expected_updated_at:
+                conn.rollback()
+                raise ValueError('Incident case was modified by another request')
         conn.execute(
             '''
             INSERT INTO incident_cases

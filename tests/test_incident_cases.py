@@ -55,6 +55,46 @@ class IncidentCaseStorageTests(unittest.TestCase):
         self.assertEqual(loaded['note'], 'Host isolated')
         self.assertEqual(loaded['request_id'], 'req-2')
 
+    def test_incident_case_rejects_stale_expected_updated_at(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cases.db'
+            first = save_incident_case(
+                {
+                    'incident_id': 'INC-ABC123',
+                    'status': 'investigating',
+                    'owner': 'alice',
+                    'note': 'Initial review',
+                },
+                path=path,
+            )
+            save_incident_case(
+                {
+                    'incident_id': 'INC-ABC123',
+                    'status': 'contained',
+                    'owner': 'bob',
+                    'note': 'Host isolated',
+                },
+                path=path,
+                expected_updated_at=first['updated_at'],
+            )
+
+            with self.assertRaises(ValueError):
+                save_incident_case(
+                    {
+                        'incident_id': 'INC-ABC123',
+                        'status': 'resolved',
+                        'owner': 'alice',
+                        'note': 'Stale browser tab',
+                    },
+                    path=path,
+                    expected_updated_at=first['updated_at'],
+                )
+
+            loaded = load_incident_case('INC-ABC123', path=path)
+
+        self.assertEqual(loaded['status'], 'contained')
+        self.assertEqual(loaded['owner'], 'bob')
+
 
 class IncidentCaseApiTests(unittest.TestCase):
     @classmethod
