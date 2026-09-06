@@ -42,6 +42,14 @@ class TrustedProxyClientIpTests(unittest.TestCase):
         request = make_request('10.1.2.3', '198.51.100.25')
         self.assertEqual(security.client_ip(request), '198.51.100.25')
 
+    def test_trusted_proxy_ignores_attacker_prepended_forwarded_for_value(self):
+        request = make_request('10.1.2.3', '192.0.2.99, 198.51.100.25')
+        self.assertEqual(security.client_ip(request), '198.51.100.25')
+
+    def test_trusted_proxy_walks_right_to_left_over_trusted_proxy_hops(self):
+        request = make_request('10.1.2.3', '198.51.100.25, 10.4.5.6')
+        self.assertEqual(security.client_ip(request), '198.51.100.25')
+
 
 if __name__ == '__main__':
     unittest.main()
