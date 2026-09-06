@@ -129,14 +129,12 @@ def _audit_chain_state(path: Path) -> tuple[bool, str]:
             continue
 
         record, integrity = line.rsplit(marker, 1)
-        integrity_fields = dict(
-            field.split('=', 1)
-            for field in integrity.split()
-            if '=' in field
-        )
-        claimed_previous = integrity_fields.get('prev_hash', '')
-        claimed_hash = integrity_fields.get('hash', '')
-        if claimed_previous != previous_hash or len(claimed_hash) != 64:
+        claimed_previous, separator, claimed_hash = integrity.partition(' hash=')
+        if (
+            not separator
+            or claimed_previous != previous_hash
+            or len(claimed_hash) != 64
+        ):
             return False, previous_hash
         expected_hash = _audit_record_hash(previous_hash, record)
         if not secrets.compare_digest(claimed_hash, expected_hash):
