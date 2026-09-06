@@ -493,6 +493,31 @@ async def update_incident_case(incident_id: str, request: Request):
         'note': '',
     }
 
+    expected_updated_at = payload.get('expected_updated_at')
+    if expected_updated_at is not None:
+        if not isinstance(expected_updated_at, str) or not expected_updated_at.strip():
+            raise HTTPException(
+                status_code=400,
+                detail='expected_updated_at must be a non-empty string',
+            )
+        expected_updated_at = expected_updated_at.strip()
+        if len(expected_updated_at) > 128:
+            raise HTTPException(
+                status_code=400,
+                detail='expected_updated_at exceeds 128 characters',
+            )
+        if AI_SIEM_STORAGE != 'sqlite' and current.get('updated_at') != expected_updated_at:
+            audit_log(
+                request,
+                'incident_case',
+                'conflict',
+                f'incident_id={incident_id}',
+            )
+            raise HTTPException(
+                status_code=409,
+                detail='Incident case was modified by another request',
+            )
+
     def bounded_text(name: str, default: str, max_length: int) -> str:
         value = payload.get(name, default)
         if not isinstance(value, str):
@@ -527,7 +552,24 @@ async def update_incident_case(incident_id: str, request: Request):
         'updated_at': datetime.now(timezone.utc).isoformat(),
     }
     if AI_SIEM_STORAGE == 'sqlite':
-        record = save_incident_case(record)
+        try:
+            if expected_updated_at is None:
+                record = save_incident_case(record)
+            else:
+                record = save_incident_case(
+                    record,
+                    expected_updated_at=expected_updated_at,
+                )
+        except ValueError as exc:
+            if str(exc) != 'Incident case was modified by another request':
+                raise
+            audit_log(
+                request,
+                'incident_case',
+                'conflict',
+                f'incident_id={incident_id}',
+            )
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         mark_incident_snapshots_dirty()
     else:
         INCIDENT_CASES[incident_id] = dict(record)
