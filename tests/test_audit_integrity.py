@@ -1,3 +1,4 @@
+import hashlib
 import os
 import unittest
 from pathlib import Path
@@ -16,6 +17,8 @@ AUDIT_PATH = Path('logs/test-audit-integrity.log')
 class AuditIntegrityTests(unittest.TestCase):
     def setUp(self):
         security.AUDIT_LOG_PATH = AUDIT_PATH
+        security.AUDIT_HMAC_KEY = b''
+        security._AUDIT_HEAD_CACHE.clear()
         AUDIT_PATH.unlink(missing_ok=True)
 
     @staticmethod
@@ -73,6 +76,38 @@ class AuditIntegrityTests(unittest.TestCase):
         security.audit_log(self._request('req-2'), 'triage', 'success', 'second')
         original = AUDIT_PATH.read_text(encoding='utf-8')
         AUDIT_PATH.write_text(original.replace('result=success', 'result=failure', 1), encoding='utf-8')
+
+        self.assertFalse(security.verify_audit_log(AUDIT_PATH))
+
+    def test_configured_hmac_key_signs_audit_records(self):
+        security.AUDIT_HMAC_KEY = b'separate-test-signing-key'
+
+        security.audit_log(self._request('req-hmac'), 'triage', 'success', 'signed')
+
+        fields = dict(
+            field.split('=', 1)
+            for field in AUDIT_PATH.read_text(encoding='utf-8').strip().split()
+        )
+        self.assertEqual(fields['integrity'], 'hmac-sha256')
+        self.assertEqual(len(fields['mac']), 64)
+        self.assertTrue(security.verify_audit_log(AUDIT_PATH))
+
+    def test_hmac_verifier_rejects_sha_rewrite_without_signing_key(self):
+        security.AUDIT_HMAC_KEY = b'separate-test-signing-key'
+        security.audit_log(self._request('req-hmac'), 'triage', 'success', 'original')
+
+        line = AUDIT_PATH.read_text(encoding='utf-8').strip()
+        record, integrity = line.rsplit(' prev_hash=', 1)
+        previous_hash, _, remainder = integrity.partition(' hash=')
+        _, _, mac_part = remainder.partition(' mac=')
+        del mac_part
+        forged_record = record.replace('result=success', 'result=failure')
+        forged_hash = hashlib.sha256(f'{previous_hash} {forged_record}'.encode('utf-8')).hexdigest()
+        AUDIT_PATH.write_text(
+            f'{forged_record} prev_hash={previous_hash} hash={forged_hash}\n',
+            encoding='utf-8',
+        )
+        security._AUDIT_HEAD_CACHE.clear()
 
         self.assertFalse(security.verify_audit_log(AUDIT_PATH))
 
