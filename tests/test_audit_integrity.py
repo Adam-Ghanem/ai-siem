@@ -18,7 +18,8 @@ class AuditIntegrityTests(unittest.TestCase):
         security.AUDIT_LOG_PATH = AUDIT_PATH
         AUDIT_PATH.unlink(missing_ok=True)
 
-    def test_untrusted_detail_cannot_inject_additional_audit_fields(self):
+    @staticmethod
+    def _request(request_id: str) -> Request:
         scope = {
             'type': 'http',
             'method': 'POST',
@@ -31,8 +32,12 @@ class AuditIntegrityTests(unittest.TestCase):
             'client': ('198.51.100.10', 12345),
         }
         request = Request(scope)
-        request.state.request_id = 'req-1'
+        request.state.request_id = request_id
         request.state.authz_role = 'analyst'
+        return request
+
+    def test_untrusted_detail_cannot_inject_additional_audit_fields(self):
+        request = self._request('req-1')
 
         security.audit_log(
             request,
@@ -50,6 +55,26 @@ class AuditIntegrityTests(unittest.TestCase):
             'detail=alert_id%3DAL-1%20forged%3Dtrue%20role%3Dadmin',
             text,
         )
+
+    def test_audit_records_are_hash_chained(self):
+        security.audit_log(self._request('req-1'), 'triage', 'success', 'first')
+        security.audit_log(self._request('req-2'), 'triage', 'success', 'second')
+
+        lines = AUDIT_PATH.read_text(encoding='utf-8').splitlines()
+        self.assertEqual(len(lines), 2)
+        first_fields = dict(field.split('=', 1) for field in lines[0].split())
+        second_fields = dict(field.split('=', 1) for field in lines[1].split())
+        self.assertEqual(first_fields['prev_hash'], '0' * 64)
+        self.assertEqual(second_fields['prev_hash'], first_fields['hash'])
+        self.assertTrue(security.verify_audit_log(AUDIT_PATH))
+
+    def test_audit_verifier_detects_modified_record(self):
+        security.audit_log(self._request('req-1'), 'triage', 'success', 'first')
+        security.audit_log(self._request('req-2'), 'triage', 'success', 'second')
+        original = AUDIT_PATH.read_text(encoding='utf-8')
+        AUDIT_PATH.write_text(original.replace('result=success', 'result=failure', 1), encoding='utf-8')
+
+        self.assertFalse(security.verify_audit_log(AUDIT_PATH))
 
 
 if __name__ == '__main__':
