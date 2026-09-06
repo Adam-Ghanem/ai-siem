@@ -63,6 +63,14 @@ AI_SIEM_ALLOWED_ORIGIN = os.getenv(
 AI_SIEM_STORAGE = os.getenv('AI_SIEM_STORAGE', 'sqlite').lower()
 MAX_PAGE_LIMIT = int(os.getenv('AI_SIEM_MAX_PAGE_LIMIT', '1000'))
 DEFAULT_PAGE_LIMIT = int(os.getenv('AI_SIEM_DEFAULT_PAGE_LIMIT', str(MAX_PAGE_LIMIT)))
+MAX_INGEST_BODY_BYTES = int(
+    os.getenv(
+        'AI_SIEM_MAX_INGEST_BODY_BYTES',
+        str((MAX_EVENTS_PER_INGEST * MAX_RAW_LOG_BYTES) + (64 * 1024)),
+    )
+)
+if MAX_INGEST_BODY_BYTES < 1:
+    raise RuntimeError('AI_SIEM_MAX_INGEST_BODY_BYTES must be a positive integer')
 DATA_FILE = Path(__file__).resolve().parents[1] / 'data' / 'sample_logs.json'
 THREAT_INTEL_FILE = Path(
     os.getenv(
@@ -690,6 +698,47 @@ def _extract_items(payload: Any):
     return items
 
 
+async def _read_ingest_json(request: Request) -> Any:
+    content_length = request.headers.get('content-length')
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            declared_length = -1
+        if declared_length > MAX_INGEST_BODY_BYTES:
+            audit_log(
+                request,
+                'ingest',
+                'body_too_large',
+                f'limit={MAX_INGEST_BODY_BYTES}',
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f'Maximum ingest request body size is {MAX_INGEST_BODY_BYTES} bytes',
+            )
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_INGEST_BODY_BYTES:
+            audit_log(
+                request,
+                'ingest',
+                'body_too_large',
+                f'limit={MAX_INGEST_BODY_BYTES}',
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f'Maximum ingest request body size is {MAX_INGEST_BODY_BYTES} bytes',
+            )
+        body.extend(chunk)
+
+    try:
+        return json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        audit_log(request, 'ingest', 'invalid_json')
+        raise HTTPException(status_code=400, detail='Invalid JSON body')
+
+
 def _payload_has_explicit_timestamp(item: Any) -> bool:
     if isinstance(item, dict):
         return item.get('timestamp') not in (None, '')
@@ -756,11 +805,7 @@ def _refresh_hot_window(accepted) -> None:
 
 @app.post('/api/ingest')
 async def ingest(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        audit_log(request, 'ingest', 'invalid_json')
-        raise HTTPException(status_code=400, detail='Invalid JSON body')
+    payload = await _read_ingest_json(request)
 
     items = _extract_items(payload)
     before_stats = parser_stats()
