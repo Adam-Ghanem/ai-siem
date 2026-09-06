@@ -174,6 +174,37 @@ class IncidentCaseApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_case_update_returns_conflict_for_stale_version(self):
+        incident = self.client.get('/api/incidents', headers=AUTH).json()[0]
+        current_case = {
+            'incident_id': incident['incident_id'],
+            'status': 'investigating',
+            'owner': 'alice',
+            'disposition': 'undetermined',
+            'note': 'Initial review',
+            'updated_at': '2026-09-06T01:00:00+00:00',
+        }
+
+        def fake_save(record, *, expected_updated_at=None):
+            if expected_updated_at == '2026-09-06T00:59:00+00:00':
+                raise ValueError('Incident case was modified by another request')
+            return dict(record)
+
+        with patch.object(main, 'load_incident_case', return_value=current_case), patch.object(
+            main, 'save_incident_case', side_effect=fake_save
+        ):
+            response = self.client.post(
+                f"/api/incidents/{incident['incident_id']}/case",
+                headers=AUTH,
+                json={
+                    'status': 'contained',
+                    'expected_updated_at': '2026-09-06T00:59:00+00:00',
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['detail'], 'Incident case was modified by another request')
+
 
 if __name__ == '__main__':
     unittest.main()
