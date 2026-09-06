@@ -12,6 +12,7 @@ services:
       AI_SIEM_DB_PATH: /app/data/ai_siem.db
       AI_SIEM_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_RATE_LIMIT_PER_MINUTE:-60}
       AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE:-10}
+      AI_SIEM_AUDIT_HMAC_KEY: ${AI_SIEM_AUDIT_HMAC_KEY:-}
     volumes:
       - ai_siem_data:/app/data
       - ai_siem_logs:/app/logs

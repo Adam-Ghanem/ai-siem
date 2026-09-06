@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -22,6 +23,7 @@ MAX_RATE_LIMIT_KEYS = int(os.getenv('AI_SIEM_MAX_RATE_LIMIT_KEYS', '10000'))
 TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() == 'true'
 TRUSTED_PROXY_CIDRS = os.getenv('AI_SIEM_TRUSTED_PROXY_CIDRS', '').strip()
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
+AUDIT_HMAC_KEY = os.getenv('AI_SIEM_AUDIT_HMAC_KEY', '').encode('utf-8')
 
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
 READ_ROLES = {'viewer', 'analyst', 'admin'}
@@ -109,9 +111,20 @@ def _audit_value(value: object, max_length: int = 256) -> str:
     return quote(_safe_text(value, max_length), safe='-._~:@/')
 
 
+def _audit_record_payload(previous_hash: str, record: str) -> bytes:
+    return f'{previous_hash} {record}'.encode('utf-8')
+
+
 def _audit_record_hash(previous_hash: str, record: str) -> str:
-    payload = f'{previous_hash} {record}'.encode('utf-8')
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(_audit_record_payload(previous_hash, record)).hexdigest()
+
+
+def _audit_record_mac(previous_hash: str, record: str) -> str:
+    return hmac.new(
+        AUDIT_HMAC_KEY,
+        _audit_record_payload(previous_hash, record),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _audit_chain_state(path: Path) -> tuple[bool, str]:
@@ -125,20 +138,40 @@ def _audit_chain_state(path: Path) -> tuple[bool, str]:
             continue
         marker = ' prev_hash='
         if marker not in line:
+            if AUDIT_HMAC_KEY:
+                return False, previous_hash
             previous_hash = _audit_record_hash(previous_hash, line)
             continue
 
         record, integrity = line.rsplit(marker, 1)
-        claimed_previous, separator, claimed_hash = integrity.partition(' hash=')
-        if (
-            not separator
-            or claimed_previous != previous_hash
-            or len(claimed_hash) != 64
-        ):
+        claimed_previous, separator, hash_and_fields = integrity.partition(' hash=')
+        if not separator:
             return False, previous_hash
+        claimed_hash, _, trailing_fields = hash_and_fields.partition(' ')
+        if claimed_previous != previous_hash or len(claimed_hash) != 64:
+            return False, previous_hash
+
         expected_hash = _audit_record_hash(previous_hash, record)
         if not secrets.compare_digest(claimed_hash, expected_hash):
             return False, previous_hash
+
+        signed_record = record.endswith(' integrity=hmac-sha256')
+        mac_value = ''
+        if trailing_fields:
+            fields = trailing_fields.split()
+            if len(fields) != 1 or not fields[0].startswith('mac='):
+                return False, previous_hash
+            mac_value = fields[0][4:]
+
+        if AUDIT_HMAC_KEY:
+            if not signed_record or len(mac_value) != 64:
+                return False, previous_hash
+            expected_mac = _audit_record_mac(previous_hash, record)
+            if not secrets.compare_digest(mac_value, expected_mac):
+                return False, previous_hash
+        elif signed_record or mac_value:
+            return False, previous_hash
+
         previous_hash = claimed_hash
     return True, previous_hash
 
@@ -212,8 +245,13 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
 
     with _AUDIT_LOCK:
         previous_hash = _current_audit_head(AUDIT_LOG_PATH)
-        record_hash = _audit_record_hash(previous_hash, line)
-        chained_line = f'{line} prev_hash={previous_hash} hash={record_hash}'
+        record = line
+        if AUDIT_HMAC_KEY:
+            record += ' integrity=hmac-sha256'
+        record_hash = _audit_record_hash(previous_hash, record)
+        chained_line = f'{record} prev_hash={previous_hash} hash={record_hash}'
+        if AUDIT_HMAC_KEY:
+            chained_line += f' mac={_audit_record_mac(previous_hash, record)}'
         with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
             handle.write(chained_line + '\n')
         stat = AUDIT_LOG_PATH.stat()
