@@ -273,12 +273,29 @@ def _trusted_proxy_peer(host: str) -> bool:
     return any(address in network for network in TRUSTED_PROXY_NETWORKS)
 
 
+def _forwarded_client_ip(forwarded: str) -> str | None:
+    hops: list[str] = []
+    for value in forwarded.split(','):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            hops.append(str(ipaddress.ip_address(value)))
+        except ValueError:
+            return None
+
+    for hop in reversed(hops):
+        if not _trusted_proxy_peer(hop):
+            return hop
+    return hops[0] if hops else None
+
+
 def client_ip(request: Request) -> str:
     peer = request.client.host if request.client else 'unknown'
     if TRUST_PROXY_HEADERS and _trusted_proxy_peer(peer):
         forwarded = request.headers.get('x-forwarded-for')
         if forwarded:
-            candidate = forwarded.split(',')[0].strip()
+            candidate = _forwarded_client_ip(forwarded)
             if candidate:
                 return _safe_text(candidate, 128)
     return _safe_text(peer, 128)
