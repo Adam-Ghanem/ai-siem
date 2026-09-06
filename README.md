@@ -124,11 +124,20 @@ The platform also includes:
 - Bounded request and ingestion limits
 - Per-IP rate limiting
 - Request IDs and audit records
+- Tamper-evident SHA-256 audit chaining, with optional keyed HMAC-SHA256 integrity
 - Secret-safe logging
 - Input validation and pagination limits
 - Proxy-header trust controls
 - Non-root Docker execution
 - Dependency and security scanning
+
+For stronger audit integrity in production, keep the signing key outside the audit-log storage and provide it at runtime:
+
+```bash
+export AI_SIEM_AUDIT_HMAC_KEY='replace-with-a-long-random-secret-from-your-secret-manager'
+```
+
+When this key is configured, every new audit record carries an HMAC-SHA256 authentication tag and verification fails closed if a record is unsigned, modified, reordered, or rewritten with only the public SHA-256 chain. Do not commit the key to source control. Enabling HMAC on an existing unsigned audit file intentionally fails closed; archive or rotate the legacy audit log first, then start a new signed log.
 
 > **Defensive use only:** deploy and test AI-SIEM against systems and telemetry you are authorized to monitor.
 
