@@ -139,6 +139,15 @@ export AI_SIEM_AUDIT_HMAC_KEY='replace-with-a-long-random-secret-from-your-secre
 
 When this key is configured, every new audit record carries an HMAC-SHA256 authentication tag and verification fails closed if a record is unsigned, modified, reordered, or rewritten with only the public SHA-256 chain. Do not commit the key to source control. Enabling HMAC on an existing unsigned audit file intentionally fails closed; archive or rotate the legacy audit log first, then start a new signed log.
 
+To rotate the signing key without invalidating already authenticated audit history, make the new secret the active key and provide retained old verification keys as a JSON array:
+
+```bash
+export AI_SIEM_AUDIT_HMAC_KEY='new-secret-from-your-secret-manager'
+export AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS='["previous-secret"]'
+```
+
+New records are signed only with `AI_SIEM_AUDIT_HMAC_KEY`; `AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS` are verification-only and must be non-empty strings. Keep only the keys required to validate retained audit history and remove retired keys after the corresponding logs age out of retention. Previous keys without an active signing key are rejected at startup to prevent an accidental integrity downgrade.
+
 > **Defensive use only:** deploy and test AI-SIEM against systems and telemetry you are authorized to monitor.
 
 ## 🚀 Quick Start
