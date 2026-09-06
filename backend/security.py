@@ -26,6 +26,7 @@ AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
 READ_ROLES = {'viewer', 'analyst', 'admin'}
 RATE_LIMIT_WINDOW_SECONDS = 60
+AUDIT_GENESIS_HASH = '0' * 64
 
 
 def _load_trusted_proxy_networks(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -94,6 +95,8 @@ API_KEYS = _load_api_keys(os.getenv('AI_SIEM_API_KEYS', ''))
 _GLOBAL_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
 _INGEST_BUCKETS: dict[str, Deque[float]] = defaultdict(deque)
 _BUCKET_LOCK = threading.Lock()
+_AUDIT_LOCK = threading.Lock()
+_AUDIT_HEAD_CACHE: dict[Path, tuple[int, int, str]] = {}
 
 
 def _safe_text(value: object, max_length: int = 256) -> str:
@@ -104,6 +107,62 @@ def _safe_text(value: object, max_length: int = 256) -> str:
 
 def _audit_value(value: object, max_length: int = 256) -> str:
     return quote(_safe_text(value, max_length), safe='-._~:@/')
+
+
+def _audit_record_hash(previous_hash: str, record: str) -> str:
+    payload = f'{previous_hash} {record}'.encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _audit_chain_state(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return True, AUDIT_GENESIS_HASH
+
+    previous_hash = AUDIT_GENESIS_HASH
+    for raw_line in path.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        marker = ' prev_hash='
+        if marker not in line:
+            previous_hash = _audit_record_hash(previous_hash, line)
+            continue
+
+        record, integrity = line.rsplit(marker, 1)
+        claimed_previous, separator, claimed_hash = integrity.partition(' hash=')
+        if (
+            not separator
+            or claimed_previous != previous_hash
+            or len(claimed_hash) != 64
+        ):
+            return False, previous_hash
+        expected_hash = _audit_record_hash(previous_hash, record)
+        if not secrets.compare_digest(claimed_hash, expected_hash):
+            return False, previous_hash
+        previous_hash = claimed_hash
+    return True, previous_hash
+
+
+def verify_audit_log(path: Path | None = None) -> bool:
+    valid, _ = _audit_chain_state(path or AUDIT_LOG_PATH)
+    return valid
+
+
+def _current_audit_head(path: Path) -> str:
+    if not path.exists():
+        _AUDIT_HEAD_CACHE.pop(path, None)
+        return AUDIT_GENESIS_HASH
+
+    stat = path.stat()
+    cached = _AUDIT_HEAD_CACHE.get(path)
+    if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+        return cached[2]
+
+    valid, head = _audit_chain_state(path)
+    if not valid:
+        raise RuntimeError('Existing audit log failed integrity verification')
+    _AUDIT_HEAD_CACHE[path] = (stat.st_size, stat.st_mtime_ns, head)
+    return head
 
 
 def _trusted_proxy_peer(host: str) -> bool:
@@ -150,8 +209,19 @@ def audit_log(request: Request, action: str, result: str, detail: str = '') -> N
         line += f' principal={_audit_value(principal, 128)}'
     if detail:
         line += f' detail={_audit_value(detail)}'
-    with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
-        handle.write(line + '\n')
+
+    with _AUDIT_LOCK:
+        previous_hash = _current_audit_head(AUDIT_LOG_PATH)
+        record_hash = _audit_record_hash(previous_hash, line)
+        chained_line = f'{line} prev_hash={previous_hash} hash={record_hash}'
+        with AUDIT_LOG_PATH.open('a', encoding='utf-8') as handle:
+            handle.write(chained_line + '\n')
+        stat = AUDIT_LOG_PATH.stat()
+        _AUDIT_HEAD_CACHE[AUDIT_LOG_PATH] = (
+            stat.st_size,
+            stat.st_mtime_ns,
+            record_hash,
+        )
 
 
 def _expire_values(values: Deque[float], now: float) -> None:
