@@ -18,6 +18,7 @@ class AuditIntegrityTests(unittest.TestCase):
     def setUp(self):
         security.AUDIT_LOG_PATH = AUDIT_PATH
         security.AUDIT_HMAC_KEY = b''
+        security.AUDIT_HMAC_PREVIOUS_KEYS = ()
         security._AUDIT_HEAD_CACHE.clear()
         AUDIT_PATH.unlink(missing_ok=True)
 
@@ -111,6 +112,31 @@ class AuditIntegrityTests(unittest.TestCase):
         security._AUDIT_HEAD_CACHE.clear()
 
         self.assertFalse(security.verify_audit_log(AUDIT_PATH))
+
+    def test_hmac_rotation_verifies_existing_records_with_previous_key(self):
+        old_key = b'old-audit-signing-key'
+        new_key = b'new-audit-signing-key'
+        security.AUDIT_HMAC_KEY = old_key
+        security.audit_log(self._request('req-old'), 'triage', 'success', 'old-key')
+
+        security.AUDIT_HMAC_KEY = new_key
+        security.AUDIT_HMAC_PREVIOUS_KEYS = (old_key,)
+        security._AUDIT_HEAD_CACHE.clear()
+        security.audit_log(self._request('req-new'), 'triage', 'success', 'new-key')
+
+        self.assertTrue(security.verify_audit_log(AUDIT_PATH))
+        lines = AUDIT_PATH.read_text(encoding='utf-8').splitlines()
+        self.assertEqual(len(lines), 2)
+
+    def test_previous_hmac_key_config_requires_json_string_array(self):
+        self.assertEqual(
+            security._load_audit_hmac_previous_keys('["old-key", "older-key"]'),
+            (b'old-key', b'older-key'),
+        )
+        with self.assertRaises(RuntimeError):
+            security._load_audit_hmac_previous_keys('{"old": "key"}')
+        with self.assertRaises(RuntimeError):
+            security._load_audit_hmac_previous_keys('["old-key", ""]')
 
 
 if __name__ == '__main__':
