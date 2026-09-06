@@ -13,6 +13,32 @@ from urllib.parse import quote
 
 from fastapi import HTTPException, Request
 
+
+def _load_audit_hmac_previous_keys(raw: str) -> tuple[bytes, ...]:
+    raw = raw.strip()
+    if not raw:
+        return ()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            'AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS must be a JSON array of strings'
+        ) from exc
+    if not isinstance(payload, list):
+        raise RuntimeError(
+            'AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS must be a JSON array of strings'
+        )
+
+    keys = []
+    for value in payload:
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(
+                'AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS must contain only non-empty strings'
+            )
+        keys.append(value.encode('utf-8'))
+    return tuple(keys)
+
+
 API_KEY = os.getenv('AI_SIEM_API_KEY', '').strip()
 GLOBAL_RATE_LIMIT_PER_MINUTE = int(os.getenv('AI_SIEM_RATE_LIMIT_PER_MINUTE', '60'))
 INGEST_RATE_LIMIT_PER_MINUTE = int(os.getenv('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '10'))
@@ -24,6 +50,13 @@ TRUST_PROXY_HEADERS = os.getenv('AI_SIEM_TRUST_PROXY_HEADERS', 'false').lower() 
 TRUSTED_PROXY_CIDRS = os.getenv('AI_SIEM_TRUSTED_PROXY_CIDRS', '').strip()
 AUDIT_LOG_PATH = Path(os.getenv('AI_SIEM_AUDIT_LOG', 'logs/audit.log'))
 AUDIT_HMAC_KEY = os.getenv('AI_SIEM_AUDIT_HMAC_KEY', '').encode('utf-8')
+AUDIT_HMAC_PREVIOUS_KEYS = _load_audit_hmac_previous_keys(
+    os.getenv('AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS', '')
+)
+if AUDIT_HMAC_PREVIOUS_KEYS and not AUDIT_HMAC_KEY:
+    raise RuntimeError(
+        'AI_SIEM_AUDIT_HMAC_PREVIOUS_KEYS requires AI_SIEM_AUDIT_HMAC_KEY'
+    )
 
 VALID_ROLES = {'viewer', 'analyst', 'ingestor', 'admin'}
 READ_ROLES = {'viewer', 'analyst', 'admin'}
@@ -119,9 +152,10 @@ def _audit_record_hash(previous_hash: str, record: str) -> str:
     return hashlib.sha256(_audit_record_payload(previous_hash, record)).hexdigest()
 
 
-def _audit_record_mac(previous_hash: str, record: str) -> str:
+def _audit_record_mac(previous_hash: str, record: str, key: bytes | None = None) -> str:
+    signing_key = AUDIT_HMAC_KEY if key is None else key
     return hmac.new(
-        AUDIT_HMAC_KEY,
+        signing_key,
         _audit_record_payload(previous_hash, record),
         hashlib.sha256,
     ).hexdigest()
@@ -166,8 +200,14 @@ def _audit_chain_state(path: Path) -> tuple[bool, str]:
         if AUDIT_HMAC_KEY:
             if not signed_record or len(mac_value) != 64:
                 return False, previous_hash
-            expected_mac = _audit_record_mac(previous_hash, record)
-            if not secrets.compare_digest(mac_value, expected_mac):
+            verification_keys = (AUDIT_HMAC_KEY, *AUDIT_HMAC_PREVIOUS_KEYS)
+            if not any(
+                secrets.compare_digest(
+                    mac_value,
+                    _audit_record_mac(previous_hash, record, key),
+                )
+                for key in verification_keys
+            ):
                 return False, previous_hash
         elif signed_record or mac_value:
             return False, previous_hash
