@@ -32,6 +32,15 @@ class EventTimeIntegrityTests(unittest.TestCase):
         })
         self.assertEqual(event.timestamp.isoformat(), '2026-09-02T04:30:00+00:00')
 
+    def test_offset_iso_timestamp_is_canonicalized_to_utc(self):
+        event = Event.from_dict({
+            'id': 'evt-offset-time-001',
+            'timestamp': '2026-09-02T04:30:00+02:00',
+            'source': 'unit-test',
+            'event_type': 'authentication',
+        })
+        self.assertEqual(event.timestamp.isoformat(), '2026-09-02T02:30:00+00:00')
+
 
 if __name__ == '__main__':
     unittest.main()
