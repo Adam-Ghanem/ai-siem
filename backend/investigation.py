@@ -40,10 +40,6 @@ def _related_anomalies(
         for anomaly in anomalies
         if related_event_ids.intersection(anomaly.related_event_ids)
         or anomaly.entity in entities
-        or any(
-            entity and entity in anomaly.entity
-            for entity in incident.related_users + incident.related_src_ips
-        )
     ]
 
 
