@@ -115,6 +115,36 @@ class IngestValidationTests(unittest.TestCase):
         self.assertIn('src_ip must be a string', response.json()['detail'])
         self.assertEqual(parser_stats()['parsed_events'], 0)
 
+    def test_structured_event_rejects_container_valued_core_scalar_fields(self):
+        cases = {
+            'id': ['evt-container-id-001'],
+            'source': {'name': 'unit-test'},
+            'event_type': ['ssh_login'],
+            'raw_log': {'message': 'login accepted'},
+        }
+        for field_name, invalid_value in cases.items():
+            with self.subTest(field_name=field_name):
+                event = {
+                    'id': 'evt-core-field-001',
+                    'timestamp': '2026-09-04T10:00:00Z',
+                    'source': 'unit-test',
+                    'event_type': 'ssh_login',
+                    'raw_log': 'login accepted',
+                }
+                event[field_name] = invalid_value
+                response = self.client.post(
+                    '/api/ingest',
+                    headers=AUTH,
+                    json={'events': [event]},
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(
+                    f'{field_name} must be a string',
+                    response.json()['detail'],
+                )
+                self.assertEqual(parser_stats()['parsed_events'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
