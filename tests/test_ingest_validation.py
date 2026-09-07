@@ -92,6 +92,29 @@ class IngestValidationTests(unittest.TestCase):
             },
         )
 
+    def test_structured_event_rejects_container_valued_scalar_fields(self):
+        response = self.client.post(
+            '/api/ingest',
+            headers=AUTH,
+            json={
+                'events': [
+                    {
+                        'id': 'evt-container-field-001',
+                        'timestamp': '2026-09-04T10:00:00Z',
+                        'source': 'unit-test',
+                        'event_type': 'ssh_login',
+                        'status': 'success',
+                        'user': 'analyst',
+                        'src_ip': {'address': '198.51.100.10'},
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('src_ip must be a string', response.json()['detail'])
+        self.assertEqual(parser_stats()['parsed_events'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
