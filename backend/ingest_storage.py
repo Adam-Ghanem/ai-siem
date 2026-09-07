@@ -33,9 +33,10 @@ def _event_rows(events: Iterable[Event]) -> list[tuple]:
 
 def _alert_rows(alerts: Iterable[Alert]) -> list[tuple]:
     rows = []
+    seen: dict[str, tuple] = {}
     for alert in alerts:
         data = alert.to_dict()
-        rows.append((
+        row = (
             alert.alert_id,
             alert.timestamp.isoformat(),
             alert.rule_id,
@@ -45,7 +46,16 @@ def _alert_rows(alerts: Iterable[Alert]) -> list[tuple]:
             alert.user,
             alert.src_ip,
             json.dumps(data, ensure_ascii=False),
-        ))
+        )
+        existing = seen.get(alert.alert_id)
+        if existing is not None:
+            if existing != row:
+                raise IngestCommitRace(
+                    'Conflicting alert ID inside ingest batch'
+                )
+            continue
+        seen[alert.alert_id] = row
+        rows.append(row)
     return rows
 
 
