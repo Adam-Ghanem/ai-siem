@@ -28,6 +28,20 @@ def _bounded_confidence(value: Any) -> int:
         return 0
 
 
+def _entry_fingerprint(entry: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        entry['indicator'],
+        entry['type'],
+        entry['source'],
+        entry['confidence'],
+        entry['severity'],
+        tuple(entry['tags']),
+        entry['description'],
+        entry['first_seen'],
+        entry['last_seen'],
+    )
+
+
 class ThreatIntelIndex:
     def __init__(self, entries: Iterable[dict[str, Any]] | None = None):
         self._entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -35,6 +49,7 @@ class ThreatIntelIndex:
             4: [],
             6: [],
         }
+        self._fingerprints: set[tuple[Any, ...]] = set()
         for entry in entries or []:
             self.add(entry)
 
@@ -84,6 +99,10 @@ class ThreatIntelIndex:
             'first_seen': str(entry.get('first_seen') or '').strip(),
             'last_seen': str(entry.get('last_seen') or '').strip(),
         }
+        fingerprint = _entry_fingerprint(normalized)
+        if fingerprint in self._fingerprints:
+            return False
+        self._fingerprints.add(fingerprint)
         self._entries[indicator].append(normalized)
         if network is not None:
             self._networks[network.version].append((network, normalized))
