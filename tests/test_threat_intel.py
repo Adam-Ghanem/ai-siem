@@ -36,6 +36,25 @@ class ThreatIntelIndexTests(unittest.TestCase):
         self.assertEqual(result['sources'], ['feed-a', 'feed-b'])
         self.assertEqual(result['tags'], ['c2', 'scanner'])
 
+    def test_duplicate_feed_entries_do_not_inflate_matches(self):
+        duplicate = {
+            'indicator': '203.0.113.7',
+            'type': 'ip',
+            'source': 'feed-a',
+            'confidence': 80,
+            'severity': 'high',
+            'tags': ['c2', 'scanner'],
+            'description': 'known command and control',
+            'first_seen': '2026-09-01T00:00:00Z',
+            'last_seen': '2026-09-07T00:00:00Z',
+        }
+        index = ThreatIntelIndex([duplicate, dict(duplicate)])
+
+        result = index.lookup('203.0.113.7')
+
+        self.assertEqual(result['match_count'], 1)
+        self.assertEqual(index.stats()['entries'], 1)
+
     def test_lookup_matches_ipv4_cidr_and_exact_indicator(self):
         index = ThreatIntelIndex(
             [
