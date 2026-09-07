@@ -9,41 +9,10 @@ from backend.storage import connect, init_db
 
 
 class IngestAlertAtomicityTests(unittest.TestCase):
-    def test_alert_id_collision_rolls_back_the_event(self):
+    def test_conflicting_alert_ids_inside_batch_reject_before_event_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / 'atomic-ingest.db'
             init_db(db)
-            existing_alert = Alert(
-                alert_id='AL-COLLISION-1',
-                rule_id='DET-EXISTING',
-                title='Existing alert',
-                severity='high',
-                confidence=0.9,
-                tactic='Execution',
-                technique='T1059',
-                timestamp=datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc),
-            )
-            with connect(db) as conn:
-                conn.execute(
-                    '''
-                    INSERT INTO alerts
-                    (alert_id, timestamp, rule_id, severity, tactic, asset, user, src_ip, alert_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        existing_alert.alert_id,
-                        existing_alert.timestamp.isoformat(),
-                        existing_alert.rule_id,
-                        existing_alert.severity,
-                        existing_alert.tactic,
-                        None,
-                        None,
-                        None,
-                        '{}',
-                    ),
-                )
-                conn.commit()
-
             event = Event.from_dict(
                 {
                     'id': 'evt-atomic-alert-1',
@@ -52,32 +21,59 @@ class IngestAlertAtomicityTests(unittest.TestCase):
                     'event_type': 'process_start',
                 }
             )
-            colliding_alert = Alert(
-                alert_id=existing_alert.alert_id,
-                rule_id='DET-NEW',
-                title='New detection',
-                severity='critical',
-                confidence=0.99,
+            first = Alert(
+                alert_id='AL-COLLISION-1',
+                rule_id='DET-FIRST',
+                title='First detection',
+                severity='high',
+                confidence=0.9,
                 tactic='Execution',
                 technique='T1059',
-                timestamp=event.timestamp,
+                timestamp=datetime(2026, 9, 7, 18, 1, tzinfo=timezone.utc),
+                event_ids=[event.id],
+            )
+            second = Alert(
+                alert_id='AL-COLLISION-1',
+                rule_id='DET-SECOND',
+                title='Conflicting detection',
+                severity='critical',
+                confidence=0.99,
+                tactic='Credential Access',
+                technique='T1003',
+                timestamp=datetime(2026, 9, 7, 18, 1, tzinfo=timezone.utc),
                 event_ids=[event.id],
             )
 
             with self.assertRaises(IngestCommitRace):
-                save_ingest_batch([event], [colliding_alert], db)
+                save_ingest_batch([event], [first, second], db)
 
             with connect(db) as conn:
                 event_count = conn.execute(
                     'SELECT COUNT(*) FROM events WHERE id = ?', (event.id,)
                 ).fetchone()[0]
-                alert_count = conn.execute(
-                    'SELECT COUNT(*) FROM alerts WHERE alert_id = ?',
-                    (existing_alert.alert_id,),
-                ).fetchone()[0]
+                alert_count = conn.execute('SELECT COUNT(*) FROM alerts').fetchone()[0]
 
             self.assertEqual(event_count, 0)
-            self.assertEqual(alert_count, 1)
+            self.assertEqual(alert_count, 0)
+
+    def test_exact_duplicate_alert_inside_batch_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'duplicate-alert.db'
+            alert = Alert(
+                alert_id='AL-DUPLICATE-1',
+                rule_id='DET-DUPLICATE',
+                title='Duplicate detection',
+                severity='high',
+                confidence=0.9,
+                tactic='Execution',
+                technique='T1059',
+                timestamp=datetime(2026, 9, 7, 18, 2, tzinfo=timezone.utc),
+            )
+
+            saved_events, saved_alerts = save_ingest_batch([], [alert, alert], db)
+
+            self.assertEqual(saved_events, 0)
+            self.assertEqual(saved_alerts, 1)
 
 
 if __name__ == '__main__':
