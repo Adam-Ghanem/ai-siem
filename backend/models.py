@@ -31,6 +31,15 @@ def _optional_text(data: dict[str, Any], field_name: str) -> str | None:
     return value
 
 
+def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
+    value = data.get(field_name)
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f'{field_name} must be a string')
+    return value
+
+
 @dataclass
 class Event:
     id: str
@@ -53,11 +62,18 @@ class Event:
             raise ValueError('event must be a JSON object')
         if not data.get('source') or not data.get('event_type'):
             raise ValueError('event requires source and event_type')
+        if not isinstance(data['source'], str):
+            raise ValueError('source must be a string')
+        if not isinstance(data['event_type'], str):
+            raise ValueError('event_type must be a string')
+
+        event_id = _provided_text(data, 'id') or f'evt-{uuid4().hex[:12]}'
+        raw_log = _provided_text(data, 'raw_log')
         return cls(
-            id=str(data.get('id') or f'evt-{uuid4().hex[:12]}'),
+            id=event_id,
             timestamp=parse_time(data.get('timestamp')),
-            source=str(data['source']),
-            event_type=str(data['event_type']),
+            source=data['source'],
+            event_type=data['event_type'],
             asset=_optional_text(data, 'asset'),
             user=_optional_text(data, 'user'),
             src_ip=_optional_text(data, 'src_ip'),
@@ -66,7 +82,7 @@ class Event:
             command_line=_optional_text(data, 'command_line'),
             status=_optional_text(data, 'status'),
             message=_optional_text(data, 'message'),
-            raw_log=str(data.get('raw_log') or data),
+            raw_log=raw_log or str(data),
         )
 
     def to_dict(self) -> dict[str, Any]:
