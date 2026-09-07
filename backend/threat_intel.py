@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,6 +29,36 @@ def _bounded_confidence(value: Any) -> int:
         return 0
 
 
+def _parse_expiry(value: Any) -> datetime | None:
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ValueError('expires_at must be an ISO-8601 string')
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        expiry = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError('expires_at must be a valid ISO-8601 timestamp') from exc
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    else:
+        expiry = expiry.astimezone(timezone.utc)
+    return expiry
+
+
+def _entry_is_active(entry: dict[str, Any], now: datetime | None = None) -> bool:
+    expires_at = entry.get('expires_at')
+    if not expires_at:
+        return True
+    expiry = _parse_expiry(expires_at)
+    current = now or datetime.now(timezone.utc)
+    return expiry is None or expiry > current
+
+
 def _entry_fingerprint(entry: dict[str, Any]) -> tuple[Any, ...]:
     return (
         entry['indicator'],
@@ -39,6 +70,7 @@ def _entry_fingerprint(entry: dict[str, Any]) -> tuple[Any, ...]:
         entry['description'],
         entry['first_seen'],
         entry['last_seen'],
+        entry['expires_at'],
     )
 
 
@@ -74,6 +106,13 @@ class ThreatIntelIndex:
         if not indicator or not source:
             return False
 
+        try:
+            expiry = _parse_expiry(entry.get('expires_at'))
+        except ValueError:
+            return False
+        if expiry is not None and expiry <= datetime.now(timezone.utc):
+            return False
+
         network = None
         if '/' in indicator:
             try:
@@ -98,6 +137,7 @@ class ThreatIntelIndex:
             'description': str(entry.get('description') or '').strip(),
             'first_seen': str(entry.get('first_seen') or '').strip(),
             'last_seen': str(entry.get('last_seen') or '').strip(),
+            'expires_at': expiry.isoformat() if expiry is not None else '',
         }
         fingerprint = _entry_fingerprint(normalized)
         if fingerprint in self._fingerprints:
@@ -110,7 +150,11 @@ class ThreatIntelIndex:
 
     def lookup(self, indicator: Any) -> dict[str, Any]:
         normalized = _normalize_indicator(indicator)
-        matches = list(self._entries.get(normalized, []))
+        now = datetime.now(timezone.utc)
+        matches = [
+            entry for entry in self._entries.get(normalized, [])
+            if _entry_is_active(entry, now)
+        ]
 
         try:
             address = ipaddress.ip_address(normalized)
@@ -120,7 +164,7 @@ class ThreatIntelIndex:
             matches.extend(
                 entry
                 for network, entry in self._networks[address.version]
-                if address in network
+                if address in network and _entry_is_active(entry, now)
             )
 
         severities = [item['severity'] for item in matches]
@@ -161,10 +205,29 @@ class ThreatIntelIndex:
         )
 
     def stats(self) -> dict[str, Any]:
-        entries = [item for values in self._entries.values() for item in values]
+        now = datetime.now(timezone.utc)
+        active_entries_by_indicator = {
+            indicator: [entry for entry in values if _entry_is_active(entry, now)]
+            for indicator, values in self._entries.items()
+        }
+        active_entries_by_indicator = {
+            indicator: values
+            for indicator, values in active_entries_by_indicator.items()
+            if values
+        }
+        entries = [
+            item
+            for values in active_entries_by_indicator.values()
+            for item in values
+        ]
         return {
-            'unique_indicators': len(self._entries),
+            'unique_indicators': len(active_entries_by_indicator),
             'entries': len(entries),
-            'network_indicators': sum(len(values) for values in self._networks.values()),
+            'network_indicators': sum(
+                1
+                for values in self._networks.values()
+                for _, entry in values
+                if _entry_is_active(entry, now)
+            ),
             'sources': sorted({item['source'] for item in entries}),
         }
