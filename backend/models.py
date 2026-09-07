@@ -22,6 +22,15 @@ def parse_time(value: Any | None) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _optional_text(data: dict[str, Any], field_name: str) -> str | None:
+    value = data.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f'{field_name} must be a string')
+    return value
+
+
 @dataclass
 class Event:
     id: str
@@ -49,9 +58,15 @@ class Event:
             timestamp=parse_time(data.get('timestamp')),
             source=str(data['source']),
             event_type=str(data['event_type']),
-            asset=data.get('asset'), user=data.get('user'), src_ip=data.get('src_ip'), dst_ip=data.get('dst_ip'),
-            process_name=data.get('process_name'), command_line=data.get('command_line'), status=data.get('status'),
-            message=data.get('message'), raw_log=str(data.get('raw_log') or data),
+            asset=_optional_text(data, 'asset'),
+            user=_optional_text(data, 'user'),
+            src_ip=_optional_text(data, 'src_ip'),
+            dst_ip=_optional_text(data, 'dst_ip'),
+            process_name=_optional_text(data, 'process_name'),
+            command_line=_optional_text(data, 'command_line'),
+            status=_optional_text(data, 'status'),
+            message=_optional_text(data, 'message'),
+            raw_log=str(data.get('raw_log') or data),
         )
 
     def to_dict(self) -> dict[str, Any]:
