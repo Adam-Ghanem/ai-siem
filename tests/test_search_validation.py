@@ -40,23 +40,23 @@ class SearchValidationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_event_search_normalizes_naive_time_bounds_to_utc(self):
+    def test_event_search_handles_mixed_timezone_awareness(self):
         response = self.client.get(
             '/api/search/events',
             params={
                 'start': '2026-08-31T00:00:00',
-                'end': '2026-09-08T00:00:00',
+                'end': '2026-09-08T00:00:00+00:00',
             },
             headers=AUTH,
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_alert_search_normalizes_naive_time_bounds_to_utc(self):
+    def test_alert_search_handles_mixed_timezone_awareness(self):
         response = self.client.get(
             '/api/alerts',
             params={
                 'start': '2026-08-31T00:00:00',
-                'end': '2026-09-08T00:00:00',
+                'end': '2026-09-08T00:00:00+00:00',
             },
             headers=AUTH,
         )
