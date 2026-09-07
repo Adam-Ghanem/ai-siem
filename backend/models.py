@@ -7,7 +7,7 @@ from uuid import uuid4
 
 def parse_time(value: Any | None) -> datetime:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if value is None or value == '':
         return datetime.now(timezone.utc)
     text = str(value).strip()
@@ -19,7 +19,7 @@ def parse_time(value: Any | None) -> datetime:
         dt = datetime.fromisoformat(text)
     except ValueError as exc:
         raise ValueError(f'invalid event timestamp: {value!r}') from exc
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _optional_text(data: dict[str, Any], field_name: str) -> str | None:
