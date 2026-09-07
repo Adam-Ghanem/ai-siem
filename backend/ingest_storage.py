@@ -9,7 +9,7 @@ from .storage import connect, init_db
 
 
 class IngestCommitRace(ValueError):
-    """An accepted event ID became occupied before the SQLite commit."""
+    """An accepted event or alert ID became occupied before the SQLite commit."""
 
 
 def _event_rows(events: Iterable[Event]) -> list[tuple]:
@@ -90,5 +90,10 @@ def save_ingest_batch(
                 alert_rows,
             )
         saved_alerts = conn.total_changes - before_alerts
+        if saved_alerts != len(alert_rows):
+            conn.rollback()
+            raise IngestCommitRace(
+                'Alert ID became occupied before ingest commit'
+            )
         conn.commit()
         return saved_events, saved_alerts
