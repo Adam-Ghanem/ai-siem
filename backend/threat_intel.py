@@ -111,10 +111,10 @@ class ThreatIntelIndex:
             return False
         raw_indicator = entry.get('indicator')
         raw_source = entry.get('source')
-        if _is_container_value(raw_indicator) or _is_container_value(raw_source):
+        if not isinstance(raw_indicator, str) or not isinstance(raw_source, str):
             return False
         indicator = _normalize_indicator(raw_indicator)
-        source = str(raw_source or '').strip()
+        source = raw_source.strip()
         if not indicator or not source:
             return False
 
