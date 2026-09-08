@@ -36,7 +36,8 @@ class AuditIntegrityEndpointTests(unittest.TestCase):
                 self.assertEqual(healthy.json(), {'valid': True})
 
                 security.AUDIT_LOG_PATH.write_text(
-                    'tampered audit record\n',
+                    'timestamp=2000-01-01T00:00:00Z '
+                    f"prev_hash={'0' * 64} hash={'0' * 64}\n",
                     encoding='utf-8',
                 )
                 tampered = self.client.get('/api/audit/integrity', headers=admin)
