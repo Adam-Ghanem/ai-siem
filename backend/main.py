@@ -644,9 +644,16 @@ def get_attack_coverage():
 @app.get('/api/metrics')
 def get_metrics():
     metrics = calculate_metrics(EVENTS, alerts(), incidents())
+    event_total = len(EVENTS)
+    if AI_SIEM_STORAGE == 'sqlite':
+        persisted = storage_stats()
+        event_total = persisted['stored_events']
+        metrics['total_events'] = event_total
+        metrics['source_distribution'] = persisted['source_distribution']
+        metrics['event_type_distribution'] = persisted['event_type_distribution']
     unknown = parser_stats()['unknown_events']
     metrics['parsing_failed_events'] = unknown
-    metrics['unknown_event_rate_pct'] = round((unknown / max(len(EVENTS), 1)) * 100, 2)
+    metrics['unknown_event_rate_pct'] = round((unknown / max(event_total, 1)) * 100, 2)
     return metrics
 
 

@@ -92,11 +92,15 @@ class BackendApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_metrics_total_events_matches_loaded_events(self):
-        events = self.client.get('/api/events', headers=AUTH).json()
+    def test_metrics_total_events_matches_durable_storage(self):
+        storage_response = self.client.get('/api/storage/stats', headers=AUTH)
         metrics_response = self.client.get('/api/metrics', headers=AUTH)
+        self.assertEqual(storage_response.status_code, 200)
         self.assertEqual(metrics_response.status_code, 200)
-        self.assertEqual(metrics_response.json()['total_events'], len(events))
+        self.assertEqual(
+            metrics_response.json()['total_events'],
+            storage_response.json()['stored_events'],
+        )
         self.assertIn('unknown_event_rate_pct', metrics_response.json())
 
     def test_attack_coverage_reports_rule_metadata(self):
