@@ -33,25 +33,29 @@ def _bounded_confidence(value: Any) -> int:
         return 0
 
 
-def _parse_expiry(value: Any) -> datetime | None:
+def _parse_optional_time(value: Any, field_name: str) -> datetime | None:
     if value is None or value == '':
         return None
     if not isinstance(value, str):
-        raise ValueError('expires_at must be an ISO-8601 string')
+        raise ValueError(f'{field_name} must be an ISO-8601 string')
     text = value.strip()
     if not text:
         return None
     if text.endswith('Z'):
         text = text[:-1] + '+00:00'
     try:
-        expiry = datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError as exc:
-        raise ValueError('expires_at must be a valid ISO-8601 timestamp') from exc
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
+        raise ValueError(f'{field_name} must be a valid ISO-8601 timestamp') from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
     else:
-        expiry = expiry.astimezone(timezone.utc)
-    return expiry
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def _parse_expiry(value: Any) -> datetime | None:
+    return _parse_optional_time(value, 'expires_at')
 
 
 def _entry_is_active(entry: dict[str, Any], now: datetime | None = None) -> bool:
@@ -116,9 +120,13 @@ class ThreatIntelIndex:
 
         try:
             expiry = _parse_expiry(entry.get('expires_at'))
+            first_seen = _parse_optional_time(entry.get('first_seen'), 'first_seen')
+            last_seen = _parse_optional_time(entry.get('last_seen'), 'last_seen')
         except ValueError:
             return False
         if expiry is not None and expiry <= datetime.now(timezone.utc):
+            return False
+        if first_seen is not None and last_seen is not None and last_seen < first_seen:
             return False
 
         network = None
@@ -143,8 +151,8 @@ class ThreatIntelIndex:
             'severity': severity,
             'tags': sorted({str(tag).strip().lower() for tag in tags if str(tag).strip()}),
             'description': str(entry.get('description') or '').strip(),
-            'first_seen': str(entry.get('first_seen') or '').strip(),
-            'last_seen': str(entry.get('last_seen') or '').strip(),
+            'first_seen': first_seen.isoformat() if first_seen is not None else '',
+            'last_seen': last_seen.isoformat() if last_seen is not None else '',
             'expires_at': expiry.isoformat() if expiry is not None else '',
         }
         fingerprint = _entry_fingerprint(normalized)
