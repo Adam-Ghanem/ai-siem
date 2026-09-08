@@ -13,6 +13,15 @@ class ThreatIntelValidationTests(unittest.TestCase):
         self.assertFalse(index.add({'indicator': '203.0.113.10', 'source': ['feed-a']}))
         self.assertEqual(index.stats()['entries'], 0)
 
+    def test_non_text_indicator_and_source_are_rejected(self):
+        index = ThreatIntelIndex()
+
+        self.assertFalse(index.add({'indicator': 203011310, 'source': 'feed-a'}))
+        self.assertFalse(index.add({'indicator': True, 'source': 'feed-a'}))
+        self.assertFalse(index.add({'indicator': '203.0.113.10', 'source': 42}))
+        self.assertFalse(index.add({'indicator': '203.0.113.10', 'source': False}))
+        self.assertEqual(index.stats()['entries'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
