@@ -19,6 +19,19 @@ class DetectionRuleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unknown event field'):
             validate_rule(rule)
 
+    def test_unknown_rule_field_is_rejected(self):
+        rule = dict(RULES[0])
+        rule['time_window_minute'] = rule['time_window_minutes']
+        with self.assertRaisesRegex(ValueError, 'unsupported field'):
+            validate_rule(rule)
+
+    def test_multiple_unknown_rule_fields_are_reported_deterministically(self):
+        rule = dict(RULES[0])
+        rule['zz_typo'] = True
+        rule['aa_typo'] = True
+        with self.assertRaisesRegex(ValueError, "unsupported fields 'aa_typo', 'zz_typo'"):
+            validate_rule(rule)
+
     def test_invalid_regex_is_rejected_before_runtime_detection(self):
         rule = dict(RULES[0])
         rule['regex'] = {'message': ['([unterminated']}

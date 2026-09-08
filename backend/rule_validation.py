@@ -9,6 +9,13 @@ ALLOWED_SEVERITIES = {'low', 'medium', 'high', 'critical'}
 ALLOWED_MATCH_OPERATORS = {'field_equals', 'contains', 'regex'}
 EVENT_FIELDS = set(Event.__dataclass_fields__)
 REQUIRED_FIELDS = {'rule_id', 'name', 'severity', 'confidence', 'tactic', 'technique'}
+OPTIONAL_FIELDS = {
+    'threshold',
+    'time_window_minutes',
+    'group_by',
+    'distinct_field',
+}
+ALLOWED_RULE_FIELDS = REQUIRED_FIELDS | ALLOWED_MATCH_OPERATORS | OPTIONAL_FIELDS
 
 
 def _require_nonempty_string(rule: dict, field: str) -> None:
@@ -50,9 +57,22 @@ def _validate_match_map(rule: dict, operator: str) -> None:
                     raise ValueError(f'{rule_id}: invalid regex for {field}: {exc}') from exc
 
 
+def _validate_rule_fields(rule: dict) -> None:
+    unknown_fields = sorted(set(rule) - ALLOWED_RULE_FIELDS)
+    if not unknown_fields:
+        return
+    rule_id = str(rule.get('rule_id') or '<unknown>')
+    if len(unknown_fields) == 1:
+        raise ValueError(f"{rule_id}: unsupported field '{unknown_fields[0]}'")
+    rendered = ', '.join(f"'{field}'" for field in unknown_fields)
+    raise ValueError(f'{rule_id}: unsupported fields {rendered}')
+
+
 def validate_rule(rule: dict) -> dict:
     if not isinstance(rule, dict):
         raise ValueError('detection rule must be an object')
+
+    _validate_rule_fields(rule)
 
     for field in REQUIRED_FIELDS:
         _require_nonempty_string(rule, field) if field != 'confidence' else None
