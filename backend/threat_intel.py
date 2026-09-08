@@ -22,6 +22,10 @@ def _normalize_indicator(value: Any) -> str:
         return text.rstrip('.')
 
 
+def _is_container_value(value: Any) -> bool:
+    return isinstance(value, (dict, list, tuple, set))
+
+
 def _bounded_confidence(value: Any) -> int:
     try:
         return max(0, min(100, int(value)))
@@ -101,8 +105,12 @@ class ThreatIntelIndex:
     def add(self, entry: dict[str, Any]) -> bool:
         if not isinstance(entry, dict):
             return False
-        indicator = _normalize_indicator(entry.get('indicator'))
-        source = str(entry.get('source') or '').strip()
+        raw_indicator = entry.get('indicator')
+        raw_source = entry.get('source')
+        if _is_container_value(raw_indicator) or _is_container_value(raw_source):
+            return False
+        indicator = _normalize_indicator(raw_indicator)
+        source = str(raw_source or '').strip()
         if not indicator or not source:
             return False
 
