@@ -247,6 +247,10 @@ def load_alerts(
         ]
 
 
+def _utc_iso(value: datetime) -> str:
+    return parse_time(value).isoformat()
+
+
 def search_alerts(
     path: str | Path | None = None,
     *,
@@ -278,10 +282,10 @@ def search_alerts(
             params.append(value)
     if start:
         clauses.append('timestamp >= ?')
-        params.append(start.isoformat())
+        params.append(_utc_iso(start))
     if end:
         clauses.append('timestamp <= ?')
-        params.append(end.isoformat())
+        params.append(_utc_iso(end))
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
     count_sql = f'SELECT COUNT(*) FROM alerts{where}'
@@ -342,10 +346,10 @@ def search_events(
         params.append(f'%{_escape_like(query)}%')
     if start:
         clauses.append('timestamp >= ?')
-        params.append(start.isoformat())
+        params.append(_utc_iso(start))
     if end:
         clauses.append('timestamp <= ?')
-        params.append(end.isoformat())
+        params.append(_utc_iso(end))
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
     count_sql = f'SELECT COUNT(*) FROM events{where}'
