@@ -36,6 +36,7 @@ from .security import (
     audit_log,
     enforce_auth,
     enforce_rate_limit,
+    verify_audit_log,
 )
 from .storage import (
     init_db,
@@ -253,6 +254,15 @@ def health():
         'storage': AI_SIEM_STORAGE,
         'threat_intel': THREAT_INTEL.stats(),
     }
+
+
+@app.get('/api/audit/integrity')
+def get_audit_integrity(request: Request):
+    if getattr(request.state, 'authz_role', '') != 'admin':
+        raise HTTPException(status_code=403, detail='Insufficient role for this operation')
+    if not verify_audit_log():
+        raise HTTPException(status_code=503, detail='Audit log integrity check failed')
+    return {'valid': True}
 
 
 @app.get('/api/events')
