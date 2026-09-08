@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backend.models import Alert, Event
@@ -128,6 +128,29 @@ class StorageTests(unittest.TestCase):
                 ['evt-search-3', 'evt-search-2'],
             )
 
+    def test_search_events_normalizes_offset_range_boundaries_to_utc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'search-offset.db'
+            init_db(db)
+            event = Event.from_dict({
+                'id': 'evt-offset-boundary',
+                'timestamp': '2026-08-31T10:05:00+00:00',
+                'source': 'linux_auth',
+                'event_type': 'ssh_login',
+                'raw_log': 'offset boundary event',
+            })
+            self.assertEqual(save_events([event], db), 1)
+            plus_two = timezone(timedelta(hours=2))
+
+            results, total = search_events(
+                db,
+                start=datetime(2026, 8, 31, 12, 4, tzinfo=plus_two),
+                end=datetime(2026, 8, 31, 12, 6, tzinfo=plus_two),
+            )
+
+            self.assertEqual(total, 1)
+            self.assertEqual([item.id for item in results], ['evt-offset-boundary'])
+
     def test_alert_round_trip_is_idempotent_and_newest_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / 'alerts.db'
@@ -253,6 +276,34 @@ class StorageTests(unittest.TestCase):
                 [alert.alert_id for alert in all_results],
                 ['AL-SEARCH-3', 'AL-SEARCH-2'],
             )
+
+    def test_search_alerts_normalizes_offset_range_boundaries_to_utc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'alert-offset.db'
+            init_db(db)
+            alert = Alert(
+                alert_id='AL-OFFSET-1',
+                rule_id='DET-OFFSET-1',
+                title='Offset search boundary',
+                severity='high',
+                confidence=0.9,
+                tactic='Execution',
+                technique='T1059',
+                timestamp=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc),
+                event_ids=['evt-offset'],
+                evidence=['offset evidence'],
+            )
+            self.assertEqual(save_alerts([alert], db), 1)
+            plus_two = timezone(timedelta(hours=2))
+
+            results, total = search_alerts(
+                db,
+                start=datetime(2026, 9, 1, 12, 0, tzinfo=plus_two),
+                end=datetime(2026, 9, 1, 12, 0, tzinfo=plus_two),
+            )
+
+            self.assertEqual(total, 1)
+            self.assertEqual([item.alert_id for item in results], ['AL-OFFSET-1'])
 
     def test_triage_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
