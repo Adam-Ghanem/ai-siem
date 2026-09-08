@@ -59,6 +59,36 @@ class AnomalyTests(unittest.TestCase):
             )
         )
 
+    def test_anomaly_ids_are_stable_for_same_telemetry(self):
+        events = [
+            event(i, status='failure', user='root', src_ip='203.0.113.10')
+            for i in range(5)
+        ]
+
+        first = detect_anomalies(events)
+        second = detect_anomalies(events)
+
+        self.assertEqual(
+            [a.anomaly_id for a in first],
+            [a.anomaly_id for a in second],
+        )
+
+    def test_distinct_anomaly_evidence_gets_distinct_ids(self):
+        first = detect_anomalies(
+            [
+                event(i, status='failure', user='root', src_ip='203.0.113.10')
+                for i in range(5)
+            ]
+        )
+        second = detect_anomalies(
+            [
+                event(i, status='failure', user='root', src_ip='203.0.113.11')
+                for i in range(5)
+            ]
+        )
+
+        self.assertNotEqual(first[0].anomaly_id, second[0].anomaly_id)
+
     def test_benign_events_produce_few_or_no_high_score_anomalies(self):
         anomalies = detect_anomalies(
             [
