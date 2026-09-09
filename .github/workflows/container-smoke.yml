@@ -1,0 +1,104 @@
+name: Container smoke verification
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'backend/**'
+      - 'data/**'
+      - '.github/workflows/container-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'backend/**'
+      - 'data/**'
+      - '.github/workflows/container-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create ephemeral smoke credential
+        shell: bash
+        run: |
+          token="ci-$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          echo "AI_SIEM_SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "::add-mask::$token"
+
+      - name: Build production image
+        run: docker build --tag ai-siem:smoke .
+
+      - name: Verify non-root image user
+        run: |
+          image_user="$(docker image inspect ai-siem:smoke --format '{{.Config.User}}')"
+          test -n "$image_user"
+          test "$image_user" != "root"
+          test "$image_user" != "0"
+
+      - name: Start container
+        run: |
+          docker run --detach --rm \
+            --name ai-siem-smoke \
+            --publish 127.0.0.1:18000:8000 \
+            --env "AI_SIEM_API_KEY=$AI_SIEM_SMOKE_TOKEN" \
+            --env AI_SIEM_STORAGE=memory \
+            ai-siem:smoke
+
+      - name: Verify health and authenticated API
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18000/api/health > /tmp/health.json; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo 'Container did not become ready' >&2
+              docker logs ai-siem-smoke >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          health = json.loads(Path('/tmp/health.json').read_text())
+          assert health['status'] == 'ok', health
+          assert health['service'] == 'AI-SIEM', health
+          PY
+
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $AI_SIEM_SMOKE_TOKEN" \
+            http://127.0.0.1:18000/api/metrics > /tmp/metrics.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          metrics = json.loads(Path('/tmp/metrics.json').read_text())
+          assert 'total_events' in metrics, metrics
+          PY
+
+      - name: Verify runtime is non-root
+        run: |
+          runtime_uid="$(docker exec ai-siem-smoke id -u)"
+          test "$runtime_uid" != "0"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs ai-siem-smoke || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop ai-siem-smoke || true
