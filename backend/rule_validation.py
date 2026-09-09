@@ -47,7 +47,7 @@ def _validate_match_map(rule: dict, operator: str) -> None:
 
         if not isinstance(value, list) or not value:
             raise ValueError(f'{rule_id}: {operator}.{field} must be a non-empty list')
-        if not all(isinstance(item, str) and item for item in value):
+        if not all(isinstance(item, str) and item.strip() for item in value):
             raise ValueError(f'{rule_id}: {operator}.{field} entries must be non-empty strings')
         if operator == 'regex':
             for pattern in value:
