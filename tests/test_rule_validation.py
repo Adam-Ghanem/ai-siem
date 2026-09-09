@@ -39,6 +39,8 @@ class DetectionRuleValidationTests(unittest.TestCase):
             validate_rule(rule)
 
     def test_blank_contains_and_regex_entries_are_rejected(self):
+        # Whitespace-only conditions are semantically empty even though the
+        # underlying Python strings are truthy.
         for operator in ('contains', 'regex'):
             with self.subTest(operator=operator):
                 rule = dict(RULES[0])
