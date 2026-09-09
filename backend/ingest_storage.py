@@ -9,7 +9,7 @@ from .storage import connect, init_db
 
 
 class IngestCommitRace(ValueError):
-    """An accepted event ID became occupied before the SQLite commit."""
+    """An accepted event or alert ID became occupied before the SQLite commit."""
 
 
 def _event_rows(events: Iterable[Event]) -> list[tuple]:
@@ -59,6 +59,18 @@ def _alert_rows(alerts: Iterable[Alert]) -> list[tuple]:
     return rows
 
 
+def _stored_alert_row(conn, alert_id: str) -> tuple | None:
+    row = conn.execute(
+        '''
+        SELECT alert_id, timestamp, rule_id, severity, tactic, asset, user, src_ip, alert_json
+        FROM alerts
+        WHERE alert_id = ?
+        ''',
+        (alert_id,),
+    ).fetchone()
+    return tuple(row) if row is not None else None
+
+
 def save_ingest_batch(
     events: Iterable[Event],
     alerts: Iterable[Alert],
@@ -100,5 +112,14 @@ def save_ingest_batch(
                 alert_rows,
             )
         saved_alerts = conn.total_changes - before_alerts
+        if saved_alerts != len(alert_rows):
+            for alert_row in alert_rows:
+                persisted = _stored_alert_row(conn, alert_row[0])
+                if persisted != alert_row:
+                    conn.rollback()
+                    raise IngestCommitRace(
+                        'Alert ID conflicts with persisted detection'
+                    )
+
         conn.commit()
         return saved_events, saved_alerts
