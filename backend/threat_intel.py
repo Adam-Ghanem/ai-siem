@@ -118,6 +118,21 @@ class ThreatIntelIndex:
         if not indicator or not source:
             return False
 
+        raw_type = entry.get('type')
+        raw_severity = entry.get('severity')
+        raw_description = entry.get('description')
+        raw_tags = entry.get('tags')
+        if any(
+            _is_container_value(value)
+            for value in (raw_type, raw_severity, raw_description)
+            if value is not None
+        ):
+            return False
+        if isinstance(raw_tags, (dict, tuple, set)):
+            return False
+        if isinstance(raw_tags, list) and any(_is_container_value(tag) for tag in raw_tags):
+            return False
+
         try:
             expiry = _parse_expiry(entry.get('expires_at'))
             first_seen = _parse_optional_time(entry.get('first_seen'), 'first_seen')
