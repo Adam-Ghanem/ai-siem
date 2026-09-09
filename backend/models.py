@@ -66,8 +66,15 @@ class Event:
             raise ValueError('source must be a string')
         if not isinstance(data['event_type'], str):
             raise ValueError('event_type must be a string')
+        if not data['source'].strip():
+            raise ValueError('source must not be blank')
+        if not data['event_type'].strip():
+            raise ValueError('event_type must not be blank')
 
-        event_id = _provided_text(data, 'id') or f'evt-{uuid4().hex[:12]}'
+        provided_event_id = _provided_text(data, 'id')
+        if provided_event_id is not None and not provided_event_id.strip():
+            raise ValueError('id must not be blank')
+        event_id = provided_event_id or f'evt-{uuid4().hex[:12]}'
         raw_log = _provided_text(data, 'raw_log')
         return cls(
             id=event_id,
