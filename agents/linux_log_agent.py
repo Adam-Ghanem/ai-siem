@@ -8,6 +8,7 @@ Designed for an authorized lab host that you own or administer.
 from __future__ import annotations
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +47,8 @@ def read_new_lines(path: Path, offsets: dict[str, int], max_lines: int) -> list[
     key = str(path)
     current_size = path.stat().st_size
     offset = offsets.get(key, current_size)
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        offset = current_size
     if offset > current_size:
         offset = 0
     lines: list[str] = []
@@ -65,14 +68,35 @@ def load_offsets(path: Path) -> dict[str, int]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in payload.items()
+        if isinstance(key, str)
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    }
 
 
 def save_offsets(path: Path, offsets: dict[str, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(offsets, indent=2), encoding='utf-8')
+    temp_path = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+    try:
+        with temp_path.open('w', encoding='utf-8') as handle:
+            json.dump(offsets, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def main() -> int:
