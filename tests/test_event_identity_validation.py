@@ -16,6 +16,14 @@ class EventIdentityValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'id'):
             Event.from_dict({'id': '   ', 'source': 'sensor', 'event_type': 'auth'})
 
+    def test_rejects_blank_explicit_timestamp(self):
+        for timestamp in ('', '   '):
+            with self.subTest(timestamp=repr(timestamp)):
+                with self.assertRaisesRegex(ValueError, 'timestamp'):
+                    Event.from_dict(
+                        {'timestamp': timestamp, 'source': 'sensor', 'event_type': 'auth'}
+                    )
+
 
 if __name__ == '__main__':
     unittest.main()
