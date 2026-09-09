@@ -7,7 +7,8 @@ class EventIdentityValidationTests(unittest.TestCase):
     def test_rejects_blank_required_identity_fields(self):
         for field in ('source', 'event_type'):
             payload = {'source': 'sensor', 'event_type': 'auth'}
-            payload[field] = '   '\n            with self.subTest(field=field):
+            payload[field] = '   '
+            with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, field):
                     Event.from_dict(payload)
 
