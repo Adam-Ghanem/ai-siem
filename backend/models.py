@@ -75,10 +75,17 @@ class Event:
         if provided_event_id is not None and not provided_event_id.strip():
             raise ValueError('id must not be blank')
         event_id = provided_event_id or f'evt-{uuid4().hex[:12]}'
+        explicit_timestamp = data.get('timestamp')
+        if (
+            'timestamp' in data
+            and isinstance(explicit_timestamp, str)
+            and not explicit_timestamp.strip()
+        ):
+            raise ValueError('timestamp must not be blank')
         raw_log = _provided_text(data, 'raw_log')
         return cls(
             id=event_id,
-            timestamp=parse_time(data.get('timestamp')),
+            timestamp=parse_time(explicit_timestamp),
             source=data['source'],
             event_type=data['event_type'],
             asset=_optional_text(data, 'asset'),
