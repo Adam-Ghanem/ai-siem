@@ -38,6 +38,17 @@ class DetectionRuleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid regex'):
             validate_rule(rule)
 
+    def test_blank_contains_and_regex_entries_are_rejected(self):
+        for operator in ('contains', 'regex'):
+            with self.subTest(operator=operator):
+                rule = dict(RULES[0])
+                rule.pop('field_equals', None)
+                rule.pop('contains', None)
+                rule.pop('regex', None)
+                rule[operator] = {'message': ['   ']}
+                with self.assertRaisesRegex(ValueError, 'entries must be non-empty strings'):
+                    validate_rule(rule)
+
     def test_invalid_confidence_and_threshold_are_rejected(self):
         bad_confidence = dict(RULES[0])
         bad_confidence['confidence'] = 1.5
