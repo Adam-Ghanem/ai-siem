@@ -123,14 +123,20 @@ class ThreatIntelIndex:
         raw_description = entry.get('description')
         raw_tags = entry.get('tags')
         if any(
-            _is_container_value(value)
+            value is not None and not isinstance(value, str)
             for value in (raw_type, raw_severity, raw_description)
-            if value is not None
         ):
             return False
-        if isinstance(raw_tags, (dict, tuple, set)):
-            return False
-        if isinstance(raw_tags, list) and any(_is_container_value(tag) for tag in raw_tags):
+        if raw_tags is not None:
+            if isinstance(raw_tags, str):
+                pass
+            elif isinstance(raw_tags, list) and all(
+                isinstance(tag, str) for tag in raw_tags
+            ):
+                pass
+            else:
+                return False
+        if isinstance(entry.get('confidence'), bool):
             return False
 
         try:

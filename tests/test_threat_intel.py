@@ -198,6 +198,51 @@ class ThreatIntelIndexTests(unittest.TestCase):
         self.assertEqual(result['sources'], ['valid'])
         self.assertEqual(index.stats()['network_indicators'], 0)
 
+    def test_non_text_metadata_and_boolean_confidence_are_rejected(self):
+        index = ThreatIntelIndex(
+            [
+                {
+                    'indicator': '203.0.113.10',
+                    'source': 'feed-a',
+                    'type': 7,
+                    'confidence': 80,
+                },
+                {
+                    'indicator': '203.0.113.11',
+                    'source': 'feed-a',
+                    'severity': 5,
+                    'confidence': 80,
+                },
+                {
+                    'indicator': '203.0.113.12',
+                    'source': 'feed-a',
+                    'description': 1234,
+                    'confidence': 80,
+                },
+                {
+                    'indicator': '203.0.113.13',
+                    'source': 'feed-a',
+                    'tags': ["c2", 99],
+                    'confidence': 80,
+                },
+                {
+                    'indicator': '203.0.113.14',
+                    'source': 'feed-a',
+                    'confidence': True,
+                },
+            ]
+        )
+
+        for indicator in (
+            '203.0.113.10',
+            '203.0.113.11',
+            '203.0.113.12',
+            '203.0.113.13',
+            '203.0.113.14',
+        ):
+            self.assertFalse(index.lookup(indicator)['matched'])
+        self.assertEqual(index.stats()['entries'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
