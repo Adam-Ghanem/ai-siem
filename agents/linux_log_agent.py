@@ -12,6 +12,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 DEFAULT_FILES = [
@@ -61,6 +62,30 @@ def read_new_lines(path: Path, offsets: dict[str, int], max_lines: int) -> list[
             if len(lines) >= max_lines:
                 break
         offsets[key] = handle.tell()
+    return lines
+
+
+def process_file(
+    path: Path,
+    offsets: dict[str, int],
+    max_lines: int,
+    sender: Callable[[list[str]], None],
+) -> list[str]:
+    key = str(path)
+    had_offset = key in offsets
+    previous_offset = offsets.get(key)
+    lines = read_new_lines(path, offsets, max_lines)
+    if not lines:
+        return []
+
+    try:
+        sender(lines)
+    except Exception:
+        if had_offset:
+            offsets[key] = previous_offset
+        else:
+            offsets.pop(key, None)
+        raise
     return lines
 
 
@@ -125,9 +150,13 @@ def main() -> int:
     while True:
         for file in files:
             try:
-                lines = read_new_lines(file, offsets, args.batch_size)
+                lines = process_file(
+                    file,
+                    offsets,
+                    args.batch_size,
+                    lambda batch: post_logs(args.api, args.token, batch),
+                )
                 if lines:
-                    post_logs(args.api, args.token, lines)
                     save_offsets(state_path, offsets)
             except urllib.error.HTTPError as exc:
                 print(f'[error] backend returned {exc.code}: {exc.read().decode("utf-8", errors="replace")}')
