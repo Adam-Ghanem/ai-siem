@@ -6,7 +6,7 @@ os.environ.setdefault('AI_SIEM_API_KEY','test-token')
 os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE','1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE','1000')
 
-from backend.main import app, EVENTS
+from backend.main import app, EVENTS, alerts
 from backend.parser import parse_event, parse_events
 from backend.detection import run_detections
 from backend.correlation import correlate
@@ -52,6 +52,7 @@ class ApiTests(unittest.TestCase):
         c=TestClient(app); before=len(EVENTS)
         r=c.post('/api/ingest',headers=AUTH,json={'logs':['Jun 11 12:00:00 host1 sshd[1]: Accepted password for adam from 10.0.0.9 port 22 ssh2']})
         self.assertEqual(r.status_code,200); self.assertEqual(r.json()['ingested'],1); self.assertEqual(len(EVENTS),before+1)
-        t=c.post('/api/triage',headers=AUTH,json={'alert_id':'AL-test','action':'false_positive','analyst':'adam'}); self.assertEqual(t.status_code,200); self.assertEqual(t.json()['status'],'recorded')
+        current_alerts=alerts(); self.assertTrue(current_alerts)
+        t=c.post('/api/triage',headers=AUTH,json={'alert_id':current_alerts[0].alert_id,'action':'false_positive','analyst':'adam'}); self.assertEqual(t.status_code,200); self.assertEqual(t.json()['status'],'recorded')
 
 if __name__=='__main__': unittest.main()

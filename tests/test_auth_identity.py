@@ -29,11 +29,13 @@ class AuthIdentityTests(unittest.TestCase):
             '{"soc-token":{"role":"analyst","principal":"alice@example.com"}}'
         )
         try:
+            current_alerts = main_module.alerts()
+            self.assertTrue(current_alerts)
             response = self.client.post(
                 '/api/triage',
                 headers={'Authorization': 'Bearer soc-token'},
                 json={
-                    'alert_id': 'AL-IDENTITY',
+                    'alert_id': current_alerts[0].alert_id,
                     'action': 'reviewed',
                     'analyst': 'mallory@example.com',
                 },

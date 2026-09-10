@@ -27,6 +27,11 @@ class SecurityTests(unittest.TestCase):
         AUDIT_PATH.unlink(missing_ok=True)
         self.client=TestClient(main_module.app)
 
+    def _valid_alert_id(self):
+        current_alerts = main_module.alerts()
+        self.assertTrue(current_alerts)
+        return current_alerts[0].alert_id
+
     def test_health_public_but_events_require_auth(self):
         self.assertEqual(self.client.get('/api/health').status_code,200)
         self.assertEqual(self.client.get('/api/events').status_code,401)
@@ -74,7 +79,7 @@ class SecurityTests(unittest.TestCase):
             reset_rate_limit_state()
 
     def test_audit_logging(self):
-        r=self.client.post('/api/triage',headers=AUTH,json={'alert_id':'AL-1','action':'reviewed'})
+        r=self.client.post('/api/triage',headers=AUTH,json={'alert_id':self._valid_alert_id(),'action':'reviewed'})
         self.assertEqual(r.status_code,200)
         text=AUDIT_PATH.read_text(encoding='utf-8')
         self.assertIn('action=triage',text)
@@ -89,13 +94,13 @@ class SecurityTests(unittest.TestCase):
             headers=AUTH,
             json={'alert_id':'AL-\nforged=1', 'action':'reviewed'},
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 404)
         text=AUDIT_PATH.read_text(encoding='utf-8')
         self.assertEqual(len(text.splitlines()), 1)
         self.assertFalse(any(line.startswith('forged=1') for line in text.splitlines()))
 
     def test_triage_is_readable_from_api(self):
-        self.client.post('/api/triage', headers=AUTH, json={'alert_id':'AL-2','action':'closed'})
+        self.client.post('/api/triage', headers=AUTH, json={'alert_id':self._valid_alert_id(),'action':'closed'})
         response = self.client.get('/api/triage?limit=1', headers=AUTH)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
@@ -110,6 +115,7 @@ class SecurityTests(unittest.TestCase):
         viewer={'Authorization':'Bearer viewer-token'}
         ingestor={'Authorization':'Bearer ingestor-token'}
         analyst={'Authorization':'Bearer analyst-token'}
+        valid_alert_id=self._valid_alert_id()
         try:
             self.assertEqual(self.client.get('/api/events', headers=viewer).status_code, 200)
             self.assertEqual(
@@ -130,7 +136,7 @@ class SecurityTests(unittest.TestCase):
                 403,
             )
             self.assertEqual(
-                self.client.post('/api/triage', headers=analyst, json={'alert_id':'AL-RBAC','action':'reviewed'}).status_code,
+                self.client.post('/api/triage', headers=analyst, json={'alert_id':valid_alert_id,'action':'reviewed'}).status_code,
                 200,
             )
         finally:
