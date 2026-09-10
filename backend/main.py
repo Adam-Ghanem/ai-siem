@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .alert_storage import alert_exists as stored_alert_exists
 from .anomaly import detect_anomalies
 from .correlation import correlate
 from .coverage import generate_attack_coverage
@@ -135,6 +136,12 @@ def alerts():
     if AI_SIEM_STORAGE == 'sqlite':
         return load_alerts()
     return run_detections(EVENTS)
+
+
+def _alert_exists(alert_id: str) -> bool:
+    if AI_SIEM_STORAGE == 'sqlite':
+        return stored_alert_exists(alert_id)
+    return any(alert.alert_id == alert_id for alert in alerts())
 
 
 def _case_for(incident_id: str) -> dict[str, Any] | None:
@@ -896,9 +903,15 @@ async def triage(request: Request):
             raise HTTPException(status_code=400, detail=f'{name} exceeds {max_length} characters')
         return value
 
+    alert_id = bounded_text('alert_id', '')
+    action = bounded_text('action', '')
+    if not _alert_exists(alert_id):
+        audit_log(request, 'triage', 'alert_not_found', f'alert_id={alert_id}')
+        raise HTTPException(status_code=404, detail='Alert not found')
+
     record = {
-        'alert_id': bounded_text('alert_id', ''),
-        'action': bounded_text('action', ''),
+        'alert_id': alert_id,
+        'action': action,
         'analyst': getattr(request.state, 'auth_role', 'unknown'),
         'status': 'recorded',
         'request_id': getattr(request.state, 'request_id', None),
