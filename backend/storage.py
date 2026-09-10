@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS incident_cases (
 CREATE INDEX IF NOT EXISTS idx_incident_cases_status ON incident_cases(status);
 CREATE INDEX IF NOT EXISTS idx_incident_cases_owner ON incident_cases(owner);
 CREATE INDEX IF NOT EXISTS idx_incident_cases_updated_at ON incident_cases(updated_at);
+
+CREATE TABLE IF NOT EXISTS incident_case_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    disposition TEXT NOT NULL,
+    note TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    request_id TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incident_case_history_incident_id
+    ON incident_case_history(incident_id, id);
 '''
 
 
@@ -454,6 +468,19 @@ def search_triage(
         return [_triage_row(row) for row in rows], total
 
 
+def _incident_case_row(row: sqlite3.Row) -> dict:
+    return {
+        'incident_id': row['incident_id'],
+        'status': row['status'],
+        'owner': row['owner'],
+        'disposition': row['disposition'],
+        'note': row['note'],
+        'updated_by': row['updated_by'],
+        'request_id': row['request_id'] or None,
+        'updated_at': row['updated_at'],
+    }
+
+
 def save_incident_case(
     record: dict,
     path: str | Path | None = None,
@@ -498,6 +525,14 @@ def save_incident_case(
             ''',
             values,
         )
+        conn.execute(
+            '''
+            INSERT INTO incident_case_history
+            (incident_id, status, owner, disposition, note, updated_by, request_id, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            values,
+        )
         conn.commit()
     return {
         'incident_id': values[0],
@@ -528,16 +563,26 @@ def load_incident_case(
         ).fetchone()
     if row is None:
         return None
-    return {
-        'incident_id': row['incident_id'],
-        'status': row['status'],
-        'owner': row['owner'],
-        'disposition': row['disposition'],
-        'note': row['note'],
-        'updated_by': row['updated_by'],
-        'request_id': row['request_id'] or None,
-        'updated_at': row['updated_at'],
-    }
+    return _incident_case_row(row)
+
+
+def load_incident_case_history(
+    incident_id: str,
+    path: str | Path | None = None,
+) -> list[dict]:
+    init_db(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            '''
+            SELECT incident_id, status, owner, disposition, note,
+                   updated_by, request_id, updated_at
+            FROM incident_case_history
+            WHERE incident_id = ?
+            ORDER BY id ASC
+            ''',
+            (incident_id,),
+        ).fetchall()
+    return [_incident_case_row(row) for row in rows]
 
 
 def stats(path: str | Path | None = None) -> dict:
