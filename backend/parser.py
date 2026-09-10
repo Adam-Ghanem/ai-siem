@@ -75,9 +75,11 @@ def _validate_event_timestamp(event: Event) -> Event:
 def parse_event(item: str | dict[str, Any]) -> Event:
     with _STATS_LOCK:
         try:
+            if not isinstance(item, (str, dict)):
+                raise ValueError('event item must be a string or object')
             if isinstance(item, dict):
                 ev=_validate_event_timestamp(Event.from_dict(item)); PARSER_STATS['parsed_events']+=1; return ev
-            raw = str(item).strip()
+            raw = item.strip()
             if not raw: raise ValueError('empty log line')
             if raw.startswith('{'):
                 ev=_validate_event_timestamp(Event.from_dict(json.loads(raw))); PARSER_STATS['parsed_events']+=1; return ev

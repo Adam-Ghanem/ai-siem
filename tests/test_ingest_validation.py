@@ -145,6 +145,22 @@ class IngestValidationTests(unittest.TestCase):
                 )
                 self.assertEqual(parser_stats()['parsed_events'], 0)
 
+    def test_ingest_rejects_non_string_non_object_event_items(self):
+        for invalid_item in (42, True, ['nested-event']):
+            with self.subTest(invalid_item=invalid_item):
+                response = self.client.post(
+                    '/api/ingest',
+                    headers=AUTH,
+                    json={'events': [invalid_item]},
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json()['detail'],
+                    'event item must be a string or object',
+                )
+                self.assertEqual(parser_stats()['parsed_events'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
