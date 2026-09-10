@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agents.linux_log_agent import load_offsets, read_new_lines, save_offsets
+from agents.linux_log_agent import load_offsets, process_file, read_new_lines, save_offsets
 
 
 class LinuxLogAgentStateTests(unittest.TestCase):
@@ -41,6 +41,25 @@ class LinuxLogAgentStateTests(unittest.TestCase):
             offsets = {str(log): 'corrupt'}
 
             self.assertEqual(read_new_lines(log, offsets, 10), [])
+            self.assertEqual(offsets[str(log)], log.stat().st_size)
+
+    def test_failed_delivery_does_not_advance_offset_or_drop_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'auth.log'
+            log.write_text('first\nsecond\n', encoding='utf-8')
+            offsets = {str(log): 0}
+
+            def fail_send(lines):
+                self.assertEqual(lines, ['first', 'second'])
+                raise RuntimeError('backend unavailable')
+
+            with self.assertRaisesRegex(RuntimeError, 'backend unavailable'):
+                process_file(log, offsets, 10, fail_send)
+
+            self.assertEqual(offsets[str(log)], 0)
+            delivered = []
+            process_file(log, offsets, 10, delivered.extend)
+            self.assertEqual(delivered, ['first', 'second'])
             self.assertEqual(offsets[str(log)], log.stat().st_size)
 
 
