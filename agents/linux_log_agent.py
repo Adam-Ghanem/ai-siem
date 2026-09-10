@@ -21,6 +21,7 @@ DEFAULT_FILES = [
     '/var/log/nginx/access.log',
     '/var/log/apache2/access.log',
 ]
+STATE_SUFFIX = '::ai-siem:'
 
 
 def post_logs(api: str, token: str, lines: list[str]) -> None:
@@ -42,16 +43,41 @@ def post_logs(api: str, token: str, lines: list[str]) -> None:
         print(f'[sent] {len(lines)} lines -> {resp.status} {body}')
 
 
+def _state_keys(key: str) -> tuple[str, str, str]:
+    return (
+        key,
+        f'{key}{STATE_SUFFIX}device',
+        f'{key}{STATE_SUFFIX}inode',
+    )
+
+
 def read_new_lines(path: Path, offsets: dict[str, int], max_lines: int) -> list[str]:
     if not path.exists() or not path.is_file():
         return []
     key = str(path)
-    current_size = path.stat().st_size
-    offset = offsets.get(key, current_size)
-    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
-        offset = current_size
-    if offset > current_size:
+    offset_key, device_key, inode_key = _state_keys(key)
+    stat = path.stat()
+    current_size = stat.st_size
+    offset = offsets.get(offset_key, current_size)
+    previous_device = offsets.get(device_key)
+    previous_inode = offsets.get(inode_key)
+    identity_known = (
+        isinstance(previous_device, int)
+        and not isinstance(previous_device, bool)
+        and isinstance(previous_inode, int)
+        and not isinstance(previous_inode, bool)
+    )
+    rotated = identity_known and (
+        previous_device != stat.st_dev or previous_inode != stat.st_ino
+    )
+
+    if rotated:
         offset = 0
+    elif not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        offset = current_size
+    elif offset > current_size:
+        offset = 0
+
     lines: list[str] = []
     with path.open('r', encoding='utf-8', errors='replace') as handle:
         handle.seek(offset)
@@ -61,7 +87,9 @@ def read_new_lines(path: Path, offsets: dict[str, int], max_lines: int) -> list[
                 lines.append(clean)
             if len(lines) >= max_lines:
                 break
-        offsets[key] = handle.tell()
+        offsets[offset_key] = handle.tell()
+    offsets[device_key] = stat.st_dev
+    offsets[inode_key] = stat.st_ino
     return lines
 
 
@@ -71,9 +99,8 @@ def process_file(
     max_lines: int,
     sender: Callable[[list[str]], None],
 ) -> list[str]:
-    key = str(path)
-    had_offset = key in offsets
-    previous_offset = offsets.get(key)
+    keys = _state_keys(str(path))
+    previous = {key: offsets[key] for key in keys if key in offsets}
     lines = read_new_lines(path, offsets, max_lines)
     if not lines:
         return []
@@ -81,10 +108,11 @@ def process_file(
     try:
         sender(lines)
     except Exception:
-        if had_offset:
-            offsets[key] = previous_offset
-        else:
-            offsets.pop(key, None)
+        for key in keys:
+            if key in previous:
+                offsets[key] = previous[key]
+            else:
+                offsets.pop(key, None)
         raise
     return lines
 
