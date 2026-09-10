@@ -62,6 +62,32 @@ class LinuxLogAgentStateTests(unittest.TestCase):
             self.assertEqual(delivered, ['first', 'second'])
             self.assertEqual(offsets[str(log)], log.stat().st_size)
 
+    def test_rotated_file_is_read_from_start_even_when_new_file_is_larger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'auth.log'
+            log.write_text('old-one\nold-two\n', encoding='utf-8')
+            offsets = {str(log): 0}
+
+            first_delivery = []
+            process_file(log, offsets, 10, first_delivery.extend)
+            self.assertEqual(first_delivery, ['old-one', 'old-two'])
+
+            replacement = Path(tmp) / 'auth.log.next'
+            replacement.write_text(
+                'new-first\nnew-second\nnew-third\n',
+                encoding='utf-8',
+            )
+            replacement.replace(log)
+
+            second_delivery = []
+            process_file(log, offsets, 10, second_delivery.extend)
+
+            self.assertEqual(
+                second_delivery,
+                ['new-first', 'new-second', 'new-third'],
+            )
+            self.assertEqual(offsets[str(log)], log.stat().st_size)
+
 
 if __name__ == '__main__':
     unittest.main()
