@@ -32,6 +32,28 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertGreater(len(response.json()), 0)
 
+    def test_events_reads_durable_history_outside_hot_window(self):
+        event = Event(
+            id='evt-durable-events-api-only',
+            timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            source='durable-api-test',
+            event_type='network',
+            asset='archive-host',
+            raw_log='durable event outside hot memory window',
+        )
+        self.assertFalse(any(item.id == event.id for item in main.EVENTS))
+        save_events([event])
+
+        response = self.client.get(
+            '/api/events',
+            params={'source': event.source, 'limit': 10, 'offset': 0},
+            headers=AUTH,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()], [event.id])
+        self.assertEqual(response.headers['X-Total-Count'], '1')
+
     def test_event_search_exposes_storage_native_filters_and_pagination(self):
         sample = next(event for event in main.EVENTS if event.raw_log)
         query = sample.raw_log[:20]
