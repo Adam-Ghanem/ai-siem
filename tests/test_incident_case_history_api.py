@@ -24,17 +24,7 @@ class IncidentCaseHistoryApiTests(unittest.TestCase):
 
     def test_incident_case_history_returns_chronological_audit_records(self):
         incident = self.client.get('/api/incidents', headers=AUTH).json()[0]
-        history = [
-            {
-                'incident_id': incident['incident_id'],
-                'status': 'investigating',
-                'owner': 'alice',
-                'disposition': 'undetermined',
-                'note': 'Initial review',
-                'updated_by': 'alice@example.com',
-                'request_id': 'req-1',
-                'updated_at': '2026-09-10T10:00:00+00:00',
-            },
+        page = [
             {
                 'incident_id': incident['incident_id'],
                 'status': 'contained',
@@ -50,7 +40,7 @@ class IncidentCaseHistoryApiTests(unittest.TestCase):
         with patch.object(
             main,
             'search_stored_incident_case_history',
-            return_value=(history, 2),
+            return_value=(page, 2),
         ) as search_history:
             response = self.client.get(
                 f"/api/incidents/{incident['incident_id']}/case/history?limit=1&offset=1",
@@ -58,10 +48,11 @@ class IncidentCaseHistoryApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), history)
+        self.assertEqual(response.json(), page)
         self.assertEqual(response.headers['X-Total-Count'], '2')
-        self.assertEqual(response.headers['X-Limit'], '1')
-        self.assertEqual(response.headers['X-Offset'], '1')
+        self.assertEqual(response.headers['X-Page-Limit'], '1')
+        self.assertEqual(response.headers['X-Page-Offset'], '1')
+        self.assertEqual(response.headers['X-Next-Offset'], '')
         search_history.assert_called_once_with(
             incident['incident_id'],
             limit=1,
