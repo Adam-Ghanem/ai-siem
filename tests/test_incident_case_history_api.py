@@ -47,14 +47,26 @@ class IncidentCaseHistoryApiTests(unittest.TestCase):
             },
         ]
 
-        with patch.object(main, 'load_incident_case_history', return_value=history):
+        with patch.object(
+            main,
+            'search_stored_incident_case_history',
+            return_value=(history, 2),
+        ) as search_history:
             response = self.client.get(
-                f"/api/incidents/{incident['incident_id']}/case/history",
+                f"/api/incidents/{incident['incident_id']}/case/history?limit=1&offset=1",
                 headers=AUTH,
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), history)
+        self.assertEqual(response.headers['X-Total-Count'], '2')
+        self.assertEqual(response.headers['X-Limit'], '1')
+        self.assertEqual(response.headers['X-Offset'], '1')
+        search_history.assert_called_once_with(
+            incident['incident_id'],
+            limit=1,
+            offset=1,
+        )
 
     def test_incident_case_history_rejects_unknown_incident(self):
         response = self.client.get(
