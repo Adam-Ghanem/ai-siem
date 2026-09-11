@@ -44,7 +44,6 @@ from .storage import (
     load_alerts,
     load_events as load_stored_events,
     load_incident_case,
-    load_incident_case_history,
     load_triage,
     save_alerts,
     save_events,
@@ -52,6 +51,7 @@ from .storage import (
     save_triage,
     search_alerts as search_stored_alerts,
     search_events as search_stored_events,
+    search_incident_case_history as search_stored_incident_case_history,
     search_triage as search_stored_triage,
 )
 from .storage import stats as storage_stats
@@ -510,8 +510,17 @@ def get_incident_case_history(
     if incident is None:
         raise HTTPException(status_code=404, detail='Incident not found')
 
-    history = load_incident_case_history(incident_id) if AI_SIEM_STORAGE == 'sqlite' else []
-    return _page(history, limit, offset, response)
+    if AI_SIEM_STORAGE == 'sqlite':
+        history, total = search_stored_incident_case_history(
+            incident_id,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        history = []
+        total = 0
+    _set_page_headers(total, limit, offset, response)
+    return history
 
 
 @app.post('/api/incidents/{incident_id}/case')
