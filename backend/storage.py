@@ -585,6 +585,35 @@ def load_incident_case_history(
     return [_incident_case_row(row) for row in rows]
 
 
+def search_incident_case_history(
+    incident_id: str,
+    path: str | Path | None = None,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    init_db(path)
+    with connect(path) as conn:
+        total = int(
+            conn.execute(
+                'SELECT COUNT(*) FROM incident_case_history WHERE incident_id = ?',
+                (incident_id,),
+            ).fetchone()[0]
+        )
+        rows = conn.execute(
+            '''
+            SELECT incident_id, status, owner, disposition, note,
+                   updated_by, request_id, updated_at
+            FROM incident_case_history
+            WHERE incident_id = ?
+            ORDER BY id ASC
+            LIMIT ? OFFSET ?
+            ''',
+            (incident_id, limit, max(offset, 0)),
+        )
+        return [_incident_case_row(row) for row in rows], total
+
+
 def stats(path: str | Path | None = None) -> dict:
     init_db(path)
     with connect(path) as conn:
