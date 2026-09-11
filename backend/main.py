@@ -284,18 +284,32 @@ def get_events(
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ):
+    _validate_page(limit, offset)
+    if AI_SIEM_STORAGE == 'sqlite':
+        results, total = search_stored_events(
+            source=source,
+            event_type=event_type,
+            asset=asset,
+            user=user,
+            src_ip=src_ip,
+            limit=limit,
+            offset=offset,
+        )
+        _set_page_headers(total, limit, offset, response)
+        return [event.to_dict() for event in results]
+
     data = EVENTS
     if source:
-        data = [e for e in data if e.source == source]
+        data = [event for event in data if event.source == source]
     if event_type:
-        data = [e for e in data if e.event_type == event_type]
+        data = [event for event in data if event.event_type == event_type]
     if asset:
-        data = [e for e in data if e.asset == asset]
+        data = [event for event in data if event.asset == asset]
     if user:
-        data = [e for e in data if e.user == user]
+        data = [event for event in data if event.user == user]
     if src_ip:
-        data = [e for e in data if e.src_ip == src_ip]
-    return [e.to_dict() for e in _page(data, limit, offset, response)]
+        data = [event for event in data if event.src_ip == src_ip]
+    return [event.to_dict() for event in _page(data, limit, offset, response)]
 
 
 @app.get('/api/search/events')
