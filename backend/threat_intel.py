@@ -89,6 +89,13 @@ class ThreatIntelIndex:
             4: [],
             6: [],
         }
+        self._network_index: dict[
+            int,
+            dict[ipaddress._BaseNetwork, list[dict[str, Any]]],
+        ] = {
+            4: defaultdict(list),
+            6: defaultdict(list),
+        }
         self._fingerprints: set[tuple[Any, ...]] = set()
         for entry in entries or []:
             self.add(entry)
@@ -183,7 +190,25 @@ class ThreatIntelIndex:
         self._entries[indicator].append(normalized)
         if network is not None:
             self._networks[network.version].append((network, normalized))
+            self._network_index[network.version][network].append(normalized)
         return True
+
+    def _network_matches(
+        self,
+        address: ipaddress._BaseAddress,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        max_prefixlen = address.max_prefixlen
+        index = self._network_index[address.version]
+        for prefixlen in range(max_prefixlen + 1):
+            network = ipaddress.ip_network((address, prefixlen), strict=False)
+            matches.extend(
+                entry
+                for entry in index.get(network, [])
+                if _entry_is_active(entry, now)
+            )
+        return matches
 
     def lookup(self, indicator: Any) -> dict[str, Any]:
         normalized = _normalize_indicator(indicator)
@@ -198,11 +223,7 @@ class ThreatIntelIndex:
         except ValueError:
             address = None
         if address is not None:
-            matches.extend(
-                entry
-                for network, entry in self._networks[address.version]
-                if address in network and _entry_is_active(entry, now)
-            )
+            matches.extend(self._network_matches(address, now))
 
         severities = [item['severity'] for item in matches]
         max_severity = max(
