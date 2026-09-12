@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .alert_storage import alert_exists as stored_alert_exists
+from .alert_storage import alert_exists as stored_alert_exists, load_alerts_by_ids
 from .anomaly import detect_anomalies
 from .audit_search import AuditLogIntegrityError, search_audit_records
 from .correlation import correlate
@@ -694,11 +694,12 @@ async def update_incident_case(incident_id: str, request: Request):
 
 @app.get('/api/incidents/{incident_id}/investigation')
 def get_incident_investigation(incident_id: str):
-    current_alerts = alerts()
     if AI_SIEM_STORAGE == 'sqlite':
         _ensure_incident_snapshots()
         incident = load_stored_incident(incident_id)
+        current_alerts = load_alerts_by_ids(incident.related_alert_ids) if incident else []
     else:
+        current_alerts = alerts()
         incident = next(
             (item for item in incidents() if item.incident_id == incident_id),
             None,
@@ -756,7 +757,6 @@ def get_metrics():
     metrics['parsing_failed_events'] = unknown
     metrics['unknown_event_rate_pct'] = round((unknown / max(event_total, 1)) * 100, 2)
     return metrics
-
 
 @app.get('/api/parser/stats')
 def get_parser_stats():
