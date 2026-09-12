@@ -22,6 +22,39 @@ def _rel(a: Alert, b: Alert, window_seconds: int) -> bool:
     return close and bool(_shared_entities(a, b))
 
 
+def _entity_values(alert: Alert) -> tuple[str | None, str | None, str | None]:
+    return alert.asset, alert.user, alert.src_ip
+
+
+def _matches_group_entities(
+    alert: Alert,
+    assets: set[str],
+    users: set[str],
+    src_ips: set[str],
+) -> bool:
+    asset, user, src_ip = _entity_values(alert)
+    return bool(
+        (asset and asset in assets)
+        or (user and user in users)
+        or (src_ip and src_ip in src_ips)
+    )
+
+
+def _add_group_entities(
+    alert: Alert,
+    assets: set[str],
+    users: set[str],
+    src_ips: set[str],
+) -> None:
+    asset, user, src_ip = _entity_values(alert)
+    if asset:
+        assets.add(asset)
+    if user:
+        users.add(user)
+    if src_ip:
+        src_ips.add(src_ip)
+
+
 def _prio(group):
     s = sum(W.get(a.severity, 1) for a in group)
     return 'P1' if any(a.severity == 'critical' for a in group) or s >= 8 else 'P2' if any(a.severity == 'high' for a in group) or s >= 5 else 'P3'
@@ -49,18 +82,26 @@ def correlate(alerts: list[Alert], window_seconds: int = 1800) -> list[Incident]
         group = [anchor]
         used.add(anchor.alert_id)
         window_end = anchor.timestamp.timestamp() + window_seconds
+        group_assets: set[str] = set()
+        group_users: set[str] = set()
+        group_src_ips: set[str] = set()
+        _add_group_entities(anchor, group_assets, group_users, group_src_ips)
 
-        # Alerts before the anchor are necessarily already assigned. Starting at
-        # the next position avoids rescanning an ever-growing historical prefix.
-        # islice keeps this a lazy view instead of copying every suffix.
+        # Every candidate considered here is inside the anchor-bounded incident
+        # window. Because members are also inside that same forward-only window,
+        # temporal proximity is guaranteed; correlation therefore only needs an
+        # O(1) membership check against the entities already present in the group.
+        # Adding each accepted candidate's entities preserves transitive chains
+        # without rescanning an ever-growing list of prior members.
         for candidate in islice(ordered, anchor_index + 1, None):
             if candidate.timestamp.timestamp() > window_end:
                 break
             if candidate.alert_id in used:
                 continue
-            if any(_rel(candidate, member, window_seconds) for member in group):
+            if _matches_group_entities(candidate, group_assets, group_users, group_src_ips):
                 group.append(candidate)
                 used.add(candidate.alert_id)
+                _add_group_entities(candidate, group_assets, group_users, group_src_ips)
 
         title = group[0].title if len(group) == 1 else 'Correlated SOC activity: ' + ', '.join(sorted({x.tactic for x in group}))
         incidents.append(
