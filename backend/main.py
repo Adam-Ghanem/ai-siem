@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .alert_storage import alert_exists as stored_alert_exists
 from .anomaly import detect_anomalies
+from .audit_search import AuditLogIntegrityError, search_audit_records
 from .correlation import correlate
 from .coverage import generate_attack_coverage
 from .detection import run_detections
@@ -271,6 +272,45 @@ def get_audit_integrity(request: Request):
     if not verify_audit_log():
         raise HTTPException(status_code=503, detail='Audit log integrity check failed')
     return {'valid': True}
+
+
+@app.get('/api/audit')
+def get_audit_records(
+    request: Request,
+    response: Response,
+    principal: str | None = None,
+    action: str | None = None,
+    result: str | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = 0,
+):
+    if getattr(request.state, 'authz_role', '') != 'admin':
+        audit_log(request, 'authz', 'forbidden')
+        raise HTTPException(status_code=403, detail='Insufficient role for this operation')
+    _validate_page(limit, offset)
+    for name, value, max_length in (
+        ('principal', principal, 128),
+        ('action', action, 64),
+        ('result', result, 64),
+    ):
+        if value is not None and len(value) > max_length:
+            raise HTTPException(
+                status_code=400,
+                detail=f'{name} exceeds {max_length} characters',
+            )
+    try:
+        records, total = search_audit_records(
+            principal=principal,
+            action=action,
+            result=result,
+            limit=limit,
+            offset=offset,
+        )
+    except AuditLogIntegrityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _set_page_headers(total, limit, offset, response)
+    audit_log(request, 'audit_search', 'success', f'count={len(records)} total={total}')
+    return records
 
 
 @app.get('/api/events')
