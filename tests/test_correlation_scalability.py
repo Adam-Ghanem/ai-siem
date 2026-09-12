@@ -1,3 +1,4 @@
+import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -37,23 +38,31 @@ def _chain_alert(index: int, timestamp: datetime) -> Alert:
     )
 
 
-def test_correlation_avoids_quadratic_relation_scans_for_transitive_chain():
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    alerts = [_chain_alert(i, base + timedelta(seconds=i)) for i in range(120)]
+class CorrelationScalabilityTests(unittest.TestCase):
+    def test_correlation_avoids_quadratic_relation_scans_for_transitive_chain(self):
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        alerts = [_chain_alert(i, base + timedelta(seconds=i)) for i in range(120)]
 
-    from backend import correlation
+        from backend import correlation
 
-    original_rel = correlation._rel
-    calls = 0
+        original_rel = correlation._rel
+        calls = 0
 
-    def counted_rel(a, b, window_seconds):
-        nonlocal calls
-        calls += 1
-        return original_rel(a, b, window_seconds)
+        def counted_rel(a, b, window_seconds):
+            nonlocal calls
+            calls += 1
+            return original_rel(a, b, window_seconds)
 
-    with patch('backend.correlation._rel', side_effect=counted_rel):
-        incidents = correlate(alerts)
+        with patch('backend.correlation._rel', side_effect=counted_rel):
+            incidents = correlate(alerts)
 
-    assert len(incidents) == 1
-    assert incidents[0].related_alert_ids == [alert.alert_id for alert in alerts]
-    assert calls <= len(alerts) * 3
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(
+            incidents[0].related_alert_ids,
+            [alert.alert_id for alert in alerts],
+        )
+        self.assertLessEqual(calls, len(alerts) * 3)
+
+
+if __name__ == '__main__':
+    unittest.main()
