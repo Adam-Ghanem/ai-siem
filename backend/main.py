@@ -266,6 +266,37 @@ def health():
     }
 
 
+@app.get('/api/ready')
+def readiness():
+    checks: dict[str, str] = {}
+    ready = True
+
+    if AI_SIEM_STORAGE == 'sqlite':
+        try:
+            storage_stats()
+            checks['storage'] = 'ok'
+        except Exception:
+            checks['storage'] = 'failed'
+            ready = False
+    else:
+        checks['storage'] = 'ok'
+
+    try:
+        audit_valid = verify_audit_log()
+    except Exception:
+        audit_valid = False
+    checks['audit_log'] = 'ok' if audit_valid else 'failed'
+    ready = ready and audit_valid
+
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            'status': 'ready' if ready else 'not_ready',
+            'checks': checks,
+        },
+    )
+
+
 @app.get('/api/audit/integrity')
 def get_audit_integrity(request: Request):
     if getattr(request.state, 'authz_role', '') != 'admin':
@@ -497,7 +528,6 @@ def get_alerts(
         data = sorted(data, key=lambda alert: (alert.timestamp, alert.alert_id), reverse=True)
         total = len(data)
         results = data[offset:offset + limit]
-
     _set_page_headers(total, limit, offset, response)
     return [alert.to_dict() for alert in results]
 
