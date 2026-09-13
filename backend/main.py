@@ -29,6 +29,7 @@ from .incident_storage import (
 from .ingest_storage import save_ingest_batch
 from .investigation import build_investigation
 from .metrics import calculate_metrics
+from .metrics_storage import calculate_sqlite_metrics
 from .parser import parse_events, parser_stats, parser_stats_transaction
 from .rules import RULES
 from .security import (
@@ -745,14 +746,12 @@ def get_attack_coverage():
 
 @app.get('/api/metrics')
 def get_metrics():
-    metrics = calculate_metrics(EVENTS, alerts(), incidents())
-    event_total = len(EVENTS)
     if AI_SIEM_STORAGE == 'sqlite':
-        persisted = storage_stats()
-        event_total = persisted['stored_events']
-        metrics['total_events'] = event_total
-        metrics['source_distribution'] = persisted['source_distribution']
-        metrics['event_type_distribution'] = persisted['event_type_distribution']
+        metrics = calculate_sqlite_metrics()
+        event_total = metrics['total_events']
+    else:
+        metrics = calculate_metrics(EVENTS, alerts(), incidents())
+        event_total = len(EVENTS)
     unknown = parser_stats()['unknown_events']
     metrics['parsing_failed_events'] = unknown
     metrics['unknown_event_rate_pct'] = round((unknown / max(event_total, 1)) * 100, 2)
