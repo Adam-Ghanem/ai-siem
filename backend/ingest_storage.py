@@ -4,12 +4,22 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from fastapi import HTTPException
+
 from .models import Alert, Event
 from .storage import connect, init_db
 
 
-class IngestCommitRace(ValueError):
+class IngestCommitRace(HTTPException, ValueError):
     """An accepted event or alert ID became occupied before the SQLite commit."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        HTTPException.__init__(
+            self,
+            status_code=409,
+            detail='Concurrent ingest conflict; retry request',
+        )
 
 
 def _event_rows(events: Iterable[Event]) -> list[tuple]:
