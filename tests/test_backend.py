@@ -125,6 +125,33 @@ class BackendApiTests(unittest.TestCase):
         )
         self.assertIn('unknown_event_rate_pct', metrics_response.json())
 
+    def test_sqlite_metrics_do_not_materialize_alert_or_incident_history(self):
+        if main.AI_SIEM_STORAGE != 'sqlite':
+            self.skipTest('SQLite-specific metrics regression')
+
+        original_alerts = main.alerts
+        original_incidents = main.incidents
+        calls = {'alerts': 0, 'incidents': 0}
+
+        def tracked_alerts():
+            calls['alerts'] += 1
+            return original_alerts()
+
+        def tracked_incidents():
+            calls['incidents'] += 1
+            return original_incidents()
+
+        main.alerts = tracked_alerts
+        main.incidents = tracked_incidents
+        try:
+            response = self.client.get('/api/metrics', headers=AUTH)
+        finally:
+            main.alerts = original_alerts
+            main.incidents = original_incidents
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, {'alerts': 0, 'incidents': 0})
+
     def test_attack_coverage_reports_rule_metadata(self):
         response = self.client.get('/api/coverage/attack', headers=AUTH)
         self.assertEqual(response.status_code, 200)
