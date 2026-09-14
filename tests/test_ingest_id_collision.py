@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +12,7 @@ os.environ.setdefault('AI_SIEM_RATE_LIMIT_PER_MINUTE', '1000')
 os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main, storage
+from backend.ingest_storage import IngestCommitRace
 from backend.parser import parser_stats, reset_parser_stats
 from backend.security import reset_rate_limit_state
 
@@ -137,6 +139,33 @@ class IngestIdCollisionTests(unittest.TestCase):
                 persisted = storage.load_events(limit=10)
                 self.assertEqual(len(persisted), 1)
                 self.assertEqual(persisted[0].raw_log, 'persisted telemetry')
+            finally:
+                storage.DEFAULT_DB_PATH = original_db_path
+
+    def test_sqlite_commit_race_returns_retryable_conflict_and_rolls_back_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_db_path = storage.DEFAULT_DB_PATH
+            try:
+                storage.DEFAULT_DB_PATH = Path(tmp) / 'commit-race.db'
+                main.AI_SIEM_STORAGE = 'sqlite'
+                main.EVENTS[:] = []
+                before = parser_stats()
+
+                with patch.object(
+                    main,
+                    'save_ingest_batch',
+                    side_effect=IngestCommitRace('Event ID became occupied before ingest commit'),
+                ):
+                    response = self.client.post(
+                        '/api/ingest',
+                        json=self._event('concurrent telemetry'),
+                        headers=AUTH,
+                    )
+
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()['detail'], 'Concurrent ingest conflict; retry request')
+                self.assertEqual(parser_stats(), before)
+                self.assertEqual(main.EVENTS, [])
             finally:
                 storage.DEFAULT_DB_PATH = original_db_path
 
