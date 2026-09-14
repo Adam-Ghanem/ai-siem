@@ -227,9 +227,13 @@ async def security_middleware(request: Request, call_next):
             enforce_rate_limit(request)
             enforce_auth(request)
     except HTTPException as exc:
+        headers = dict(exc.headers or {})
+        if exc.status_code == 401:
+            headers.setdefault('WWW-Authenticate', 'Bearer')
         response = JSONResponse(
             status_code=exc.status_code,
             content={'detail': exc.detail},
+            headers=headers,
         )
         response.headers['X-Request-ID'] = request.state.request_id
         return response
