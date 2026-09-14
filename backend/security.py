@@ -422,7 +422,11 @@ def enforce_rate_limit(request: Request) -> None:
     if rejection is not None:
         audit_result, detail = rejection
         audit_log(request, 'rate_limit', audit_result)
-        raise HTTPException(status_code=429, detail=detail)
+        raise HTTPException(
+            status_code=429,
+            detail=detail,
+            headers={'Retry-After': str(RATE_LIMIT_WINDOW_SECONDS)},
+        )
 
 
 def _resolve_role(token: str) -> str | None:
