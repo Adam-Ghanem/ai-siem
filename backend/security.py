@@ -402,20 +402,27 @@ def _rate_limit_key(request: Request) -> str:
 
 def enforce_rate_limit(request: Request) -> None:
     key = _rate_limit_key(request)
+    rejection: tuple[str, str] | None = None
     with _BUCKET_LOCK:
         now = time.time()
         _prune_bucket(_GLOBAL_BUCKETS, now)
         _prune_bucket(_INGEST_BUCKETS, now)
         if len(_GLOBAL_BUCKETS) >= MAX_RATE_LIMIT_KEYS and key not in _GLOBAL_BUCKETS:
-            audit_log(request, 'rate_limit', 'key_capacity_exceeded')
-            raise HTTPException(status_code=429, detail='Rate limit capacity exceeded')
-        if not _check_bucket(_GLOBAL_BUCKETS, key, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
-            audit_log(request, 'rate_limit', 'global_exceeded')
-            raise HTTPException(status_code=429, detail='Global rate limit exceeded')
-        if request.url.path == '/api/ingest':
-            if not _check_bucket(_INGEST_BUCKETS, key, INGEST_RATE_LIMIT_PER_MINUTE, now):
-                audit_log(request, 'rate_limit', 'ingest_exceeded')
-                raise HTTPException(status_code=429, detail='Ingest rate limit exceeded')
+            rejection = ('key_capacity_exceeded', 'Rate limit capacity exceeded')
+        elif not _check_bucket(_GLOBAL_BUCKETS, key, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
+            rejection = ('global_exceeded', 'Global rate limit exceeded')
+        elif request.url.path == '/api/ingest' and not _check_bucket(
+            _INGEST_BUCKETS,
+            key,
+            INGEST_RATE_LIMIT_PER_MINUTE,
+            now,
+        ):
+            rejection = ('ingest_exceeded', 'Ingest rate limit exceeded')
+
+    if rejection is not None:
+        audit_result, detail = rejection
+        audit_log(request, 'rate_limit', audit_result)
+        raise HTTPException(status_code=429, detail=detail)
 
 
 def _resolve_role(token: str) -> str | None:
