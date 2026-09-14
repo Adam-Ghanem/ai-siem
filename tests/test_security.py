@@ -37,6 +37,11 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/events').status_code,401)
         self.assertEqual(self.client.get('/api/events',headers=AUTH).status_code,200)
 
+    def test_unauthorized_response_includes_bearer_challenge(self):
+        response = self.client.get('/api/events')
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get('www-authenticate'), 'Bearer')
+
     def test_ingest_limits(self):
         self.assertEqual(self.client.post('/api/ingest',headers=AUTH,json={'logs':['x']*101}).status_code,413)
         self.assertEqual(self.client.post('/api/ingest',headers=AUTH,json={'logs':['A'*(10*1024+1)]}).status_code,413)
