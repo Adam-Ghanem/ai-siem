@@ -259,10 +259,6 @@ def health():
     return {
         'status': 'ok',
         'service': 'AI-SIEM',
-        'events_loaded': len(EVENTS),
-        'allowed_origin': AI_SIEM_ALLOWED_ORIGIN,
-        'storage': AI_SIEM_STORAGE,
-        'threat_intel': THREAT_INTEL.stats(),
     }
 
 
