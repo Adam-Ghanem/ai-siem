@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import secrets
 import threading
@@ -374,6 +375,13 @@ def _check_bucket(
     return True
 
 
+def _retry_after(values: Deque[float], now: float) -> int:
+    if not values:
+        return RATE_LIMIT_WINDOW_SECONDS
+    remaining = values[0] + RATE_LIMIT_WINDOW_SECONDS - now
+    return max(1, math.ceil(remaining))
+
+
 def _resolve_identity(token: str) -> tuple[str, str] | None:
     for configured_token, identity in API_KEYS.items():
         if not secrets.compare_digest(token, configured_token):
@@ -402,30 +410,42 @@ def _rate_limit_key(request: Request) -> str:
 
 def enforce_rate_limit(request: Request) -> None:
     key = _rate_limit_key(request)
-    rejection: tuple[str, str] | None = None
+    rejection: tuple[str, str, int] | None = None
     with _BUCKET_LOCK:
         now = time.time()
         _prune_bucket(_GLOBAL_BUCKETS, now)
         _prune_bucket(_INGEST_BUCKETS, now)
         if len(_GLOBAL_BUCKETS) >= MAX_RATE_LIMIT_KEYS and key not in _GLOBAL_BUCKETS:
-            rejection = ('key_capacity_exceeded', 'Rate limit capacity exceeded')
+            rejection = (
+                'key_capacity_exceeded',
+                'Rate limit capacity exceeded',
+                RATE_LIMIT_WINDOW_SECONDS,
+            )
         elif not _check_bucket(_GLOBAL_BUCKETS, key, GLOBAL_RATE_LIMIT_PER_MINUTE, now):
-            rejection = ('global_exceeded', 'Global rate limit exceeded')
+            rejection = (
+                'global_exceeded',
+                'Global rate limit exceeded',
+                _retry_after(_GLOBAL_BUCKETS[key], now),
+            )
         elif request.url.path == '/api/ingest' and not _check_bucket(
             _INGEST_BUCKETS,
             key,
             INGEST_RATE_LIMIT_PER_MINUTE,
             now,
         ):
-            rejection = ('ingest_exceeded', 'Ingest rate limit exceeded')
+            rejection = (
+                'ingest_exceeded',
+                'Ingest rate limit exceeded',
+                _retry_after(_INGEST_BUCKETS[key], now),
+            )
 
     if rejection is not None:
-        audit_result, detail = rejection
+        audit_result, detail, retry_after = rejection
         audit_log(request, 'rate_limit', audit_result)
         raise HTTPException(
             status_code=429,
             detail=detail,
-            headers={'Retry-After': str(RATE_LIMIT_WINDOW_SECONDS)},
+            headers={'Retry-After': str(retry_after)},
         )
 
 
