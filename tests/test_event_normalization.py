@@ -13,6 +13,15 @@ class EventNormalizationTests(unittest.TestCase):
         self.assertEqual(event.source, 'windows-security')
         self.assertEqual(event.event_type, 'authentication_failure')
 
+    def test_explicit_event_id_is_trimmed(self):
+        event = Event.from_dict({
+            'id': '  evt-collector-001  ',
+            'source': 'network',
+            'event_type': 'connection',
+        })
+
+        self.assertEqual(event.id, 'evt-collector-001')
+
     def test_optional_text_fields_are_trimmed(self):
         event = Event.from_dict({
             'source': 'network',
