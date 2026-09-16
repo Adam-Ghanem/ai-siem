@@ -28,7 +28,8 @@ def _optional_text(data: dict[str, Any], field_name: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise ValueError(f'{field_name} must be a string')
-    return value
+    normalized = value.strip()
+    return normalized or None
 
 
 def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
