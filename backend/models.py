@@ -67,9 +67,11 @@ class Event:
             raise ValueError('source must be a string')
         if not isinstance(data['event_type'], str):
             raise ValueError('event_type must be a string')
-        if not data['source'].strip():
+        source = data['source'].strip()
+        event_type = data['event_type'].strip()
+        if not source:
             raise ValueError('source must not be blank')
-        if not data['event_type'].strip():
+        if not event_type:
             raise ValueError('event_type must not be blank')
 
         provided_event_id = _provided_text(data, 'id')
@@ -87,8 +89,8 @@ class Event:
         return cls(
             id=event_id,
             timestamp=parse_time(explicit_timestamp),
-            source=data['source'],
-            event_type=data['event_type'],
+            source=source,
+            event_type=event_type,
             asset=_optional_text(data, 'asset'),
             user=_optional_text(data, 'user'),
             src_ip=_optional_text(data, 'src_ip'),
