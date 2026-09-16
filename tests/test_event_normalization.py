@@ -4,6 +4,15 @@ from backend.models import Event
 
 
 class EventNormalizationTests(unittest.TestCase):
+    def test_required_taxonomy_fields_are_trimmed(self):
+        event = Event.from_dict({
+            'source': '  windows-security  ',
+            'event_type': ' authentication_failure\t',
+        })
+
+        self.assertEqual(event.source, 'windows-security')
+        self.assertEqual(event.event_type, 'authentication_failure')
+
     def test_optional_text_fields_are_trimmed(self):
         event = Event.from_dict({
             'source': 'network',
