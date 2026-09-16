@@ -5,6 +5,11 @@ from typing import Any
 from uuid import uuid4
 
 
+MAX_EVENT_ID_LENGTH = 256
+MAX_EVENT_SOURCE_LENGTH = 128
+MAX_EVENT_TYPE_LENGTH = 128
+
+
 def parse_time(value: Any | None) -> datetime:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -41,6 +46,11 @@ def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
     return value
 
 
+def _require_max_length(field_name: str, value: str, max_length: int) -> None:
+    if len(value) > max_length:
+        raise ValueError(f'{field_name} exceeds {max_length} characters')
+
+
 @dataclass
 class Event:
     id: str
@@ -73,12 +83,15 @@ class Event:
             raise ValueError('source must not be blank')
         if not event_type:
             raise ValueError('event_type must not be blank')
+        _require_max_length('source', source, MAX_EVENT_SOURCE_LENGTH)
+        _require_max_length('event_type', event_type, MAX_EVENT_TYPE_LENGTH)
 
         provided_event_id = _provided_text(data, 'id')
         if provided_event_id is not None:
             provided_event_id = provided_event_id.strip()
             if not provided_event_id:
                 raise ValueError('id must not be blank')
+            _require_max_length('id', provided_event_id, MAX_EVENT_ID_LENGTH)
         event_id = provided_event_id or f'evt-{uuid4().hex[:12]}'
         explicit_timestamp = data.get('timestamp')
         if (
