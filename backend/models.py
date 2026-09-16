@@ -75,8 +75,10 @@ class Event:
             raise ValueError('event_type must not be blank')
 
         provided_event_id = _provided_text(data, 'id')
-        if provided_event_id is not None and not provided_event_id.strip():
-            raise ValueError('id must not be blank')
+        if provided_event_id is not None:
+            provided_event_id = provided_event_id.strip()
+            if not provided_event_id:
+                raise ValueError('id must not be blank')
         event_id = provided_event_id or f'evt-{uuid4().hex[:12]}'
         explicit_timestamp = data.get('timestamp')
         if (
