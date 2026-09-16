@@ -22,6 +22,33 @@ class EventNormalizationTests(unittest.TestCase):
 
         self.assertEqual(event.id, 'evt-collector-001')
 
+    def test_event_identity_fields_reject_oversized_values(self):
+        cases = (
+            ('id', 'x' * 257, 'id exceeds 256 characters'),
+            ('source', 'x' * 129, 'source exceeds 128 characters'),
+            ('event_type', 'x' * 129, 'event_type exceeds 128 characters'),
+        )
+        for field_name, value, error in cases:
+            with self.subTest(field_name=field_name):
+                payload = {
+                    'source': 'network',
+                    'event_type': 'connection',
+                    field_name: value,
+                }
+                with self.assertRaisesRegex(ValueError, error):
+                    Event.from_dict(payload)
+
+    def test_event_identity_fields_accept_boundary_lengths(self):
+        event = Event.from_dict({
+            'id': 'i' * 256,
+            'source': 's' * 128,
+            'event_type': 't' * 128,
+        })
+
+        self.assertEqual(len(event.id), 256)
+        self.assertEqual(len(event.source), 128)
+        self.assertEqual(len(event.event_type), 128)
+
     def test_optional_text_fields_are_trimmed(self):
         event = Event.from_dict({
             'source': 'network',
