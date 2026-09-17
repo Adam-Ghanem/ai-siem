@@ -115,8 +115,8 @@ class Event:
         ):
             raise ValueError('timestamp must not be blank')
         raw_log = _provided_text(data, 'raw_log')
-        if raw_log is not None:
-            _require_max_bytes('raw_log', raw_log, MAX_EVENT_RAW_LOG_BYTES)
+        event_evidence = raw_log if raw_log is not None else str(data)
+        _require_max_bytes('raw_log', event_evidence, MAX_EVENT_RAW_LOG_BYTES)
         return cls(
             id=event_id,
             timestamp=parse_time(explicit_timestamp),
@@ -130,7 +130,7 @@ class Event:
             command_line=_optional_text(data, 'command_line', MAX_EVENT_TEXT_LENGTH),
             status=_optional_text(data, 'status'),
             message=_optional_text(data, 'message', MAX_EVENT_TEXT_LENGTH),
-            raw_log=raw_log or str(data),
+            raw_log=event_evidence,
         )
 
     def to_dict(self) -> dict[str, Any]:
