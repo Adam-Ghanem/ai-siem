@@ -13,6 +13,7 @@ MAX_EVENT_ENTITY_LENGTH = 256
 MAX_EVENT_PROCESS_LENGTH = 512
 MAX_EVENT_TEXT_LENGTH = 4096
 MAX_EVENT_RAW_LOG_BYTES = 10 * 1024
+MAX_EVENT_PROTOCOL_LENGTH = 32
 
 
 def parse_time(value: Any | None) -> datetime:
@@ -57,6 +58,33 @@ def _optional_ip(data: dict[str, Any], field_name: str) -> str | None:
         raise ValueError(f'{field_name} must be a valid IP address') from exc
 
 
+def _optional_port(data: dict[str, Any], field_name: str) -> int | None:
+    value = data.get(field_name)
+    if value is None or value == '':
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f'{field_name} must be an integer between 0 and 65535')
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not normalized.isascii() or not normalized.isdigit():
+            raise ValueError(f'{field_name} must be an integer between 0 and 65535')
+        port = int(normalized)
+    elif isinstance(value, int):
+        port = value
+    else:
+        raise ValueError(f'{field_name} must be an integer between 0 and 65535')
+    if not 0 <= port <= 65535:
+        raise ValueError(f'{field_name} must be an integer between 0 and 65535')
+    return port
+
+
+def _optional_protocol(data: dict[str, Any]) -> str | None:
+    protocol = _optional_text(data, 'protocol', MAX_EVENT_PROTOCOL_LENGTH)
+    return protocol.lower() if protocol is not None else None
+
+
 def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
     value = data.get(field_name)
     if value is None or value == '':
@@ -91,6 +119,9 @@ class Event:
     status: str | None = None
     message: str | None = None
     raw_log: str = ''
+    src_port: int | None = None
+    dst_port: int | None = None
+    protocol: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> 'Event':
@@ -142,6 +173,9 @@ class Event:
             status=_optional_text(data, 'status'),
             message=_optional_text(data, 'message', MAX_EVENT_TEXT_LENGTH),
             raw_log=event_evidence,
+            src_port=_optional_port(data, 'src_port'),
+            dst_port=_optional_port(data, 'dst_port'),
+            protocol=_optional_protocol(data),
         )
 
     def to_dict(self) -> dict[str, Any]:
