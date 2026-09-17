@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from ipaddress import ip_address
 from typing import Any
 from uuid import uuid4
 
@@ -44,6 +45,16 @@ def _optional_text(
         return None
     _require_max_length(field_name, normalized, max_length)
     return normalized
+
+
+def _optional_ip(data: dict[str, Any], field_name: str) -> str | None:
+    normalized = _optional_text(data, field_name)
+    if normalized is None:
+        return None
+    try:
+        return str(ip_address(normalized))
+    except ValueError as exc:
+        raise ValueError(f'{field_name} must be a valid IP address') from exc
 
 
 def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
@@ -124,8 +135,8 @@ class Event:
             event_type=event_type,
             asset=_optional_text(data, 'asset'),
             user=_optional_text(data, 'user'),
-            src_ip=_optional_text(data, 'src_ip'),
-            dst_ip=_optional_text(data, 'dst_ip'),
+            src_ip=_optional_ip(data, 'src_ip'),
+            dst_ip=_optional_ip(data, 'dst_ip'),
             process_name=_optional_text(data, 'process_name', MAX_EVENT_PROCESS_LENGTH),
             command_line=_optional_text(data, 'command_line', MAX_EVENT_TEXT_LENGTH),
             status=_optional_text(data, 'status'),
