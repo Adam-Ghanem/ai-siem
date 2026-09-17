@@ -8,6 +8,9 @@ from uuid import uuid4
 MAX_EVENT_ID_LENGTH = 256
 MAX_EVENT_SOURCE_LENGTH = 128
 MAX_EVENT_TYPE_LENGTH = 128
+MAX_EVENT_ENTITY_LENGTH = 256
+MAX_EVENT_PROCESS_LENGTH = 512
+MAX_EVENT_TEXT_LENGTH = 4096
 
 
 def parse_time(value: Any | None) -> datetime:
@@ -27,14 +30,19 @@ def parse_time(value: Any | None) -> datetime:
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _optional_text(data: dict[str, Any], field_name: str) -> str | None:
+def _optional_text(
+    data: dict[str, Any], field_name: str, max_length: int = MAX_EVENT_ENTITY_LENGTH
+) -> str | None:
     value = data.get(field_name)
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError(f'{field_name} must be a string')
     normalized = value.strip()
-    return normalized or None
+    if not normalized:
+        return None
+    _require_max_length(field_name, normalized, max_length)
+    return normalized
 
 
 def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
@@ -110,10 +118,10 @@ class Event:
             user=_optional_text(data, 'user'),
             src_ip=_optional_text(data, 'src_ip'),
             dst_ip=_optional_text(data, 'dst_ip'),
-            process_name=_optional_text(data, 'process_name'),
-            command_line=_optional_text(data, 'command_line'),
+            process_name=_optional_text(data, 'process_name', MAX_EVENT_PROCESS_LENGTH),
+            command_line=_optional_text(data, 'command_line', MAX_EVENT_TEXT_LENGTH),
             status=_optional_text(data, 'status'),
-            message=_optional_text(data, 'message'),
+            message=_optional_text(data, 'message', MAX_EVENT_TEXT_LENGTH),
             raw_log=raw_log or str(data),
         )
 
