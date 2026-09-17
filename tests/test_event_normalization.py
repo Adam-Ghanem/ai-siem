@@ -130,6 +130,30 @@ class EventNormalizationTests(unittest.TestCase):
         self.assertEqual(len(event.command_line or ''), 4096)
         self.assertEqual(len(event.message or ''), 4096)
 
+    def test_raw_log_enforces_utf8_byte_limit(self):
+        boundary = 'é' * 5120
+        event = Event.from_dict({
+            'source': 'network',
+            'event_type': 'connection',
+            'raw_log': boundary,
+        })
+        self.assertEqual(event.raw_log, boundary)
+
+        with self.assertRaisesRegex(ValueError, 'raw_log exceeds 10240 bytes'):
+            Event.from_dict({
+                'source': 'network',
+                'event_type': 'connection',
+                'raw_log': boundary + 'é',
+            })
+
+    def test_synthesized_raw_log_is_also_bounded(self):
+        with self.assertRaisesRegex(ValueError, 'raw_log exceeds 10240 bytes'):
+            Event.from_dict({
+                'source': 'network',
+                'event_type': 'connection',
+                'collector_extension': 'x' * 11000,
+            })
+
 
 if __name__ == '__main__':
     unittest.main()
