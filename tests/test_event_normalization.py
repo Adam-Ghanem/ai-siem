@@ -72,6 +72,27 @@ class EventNormalizationTests(unittest.TestCase):
         self.assertEqual(event.status, 'success')
         self.assertEqual(event.message, 'accepted')
 
+    def test_ip_fields_are_canonicalized(self):
+        event = Event.from_dict({
+            'source': 'network',
+            'event_type': 'connection',
+            'src_ip': ' 2001:0db8:0000:0000:0000:0000:0000:0001 ',
+            'dst_ip': '192.0.2.10',
+        })
+
+        self.assertEqual(event.src_ip, '2001:db8::1')
+        self.assertEqual(event.dst_ip, '192.0.2.10')
+
+    def test_invalid_ip_fields_are_rejected(self):
+        for field_name in ('src_ip', 'dst_ip'):
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(ValueError, f'{field_name} must be a valid IP address'):
+                    Event.from_dict({
+                        'source': 'network',
+                        'event_type': 'connection',
+                        field_name: 'not-an-ip-address',
+                    })
+
     def test_blank_optional_entity_fields_become_none(self):
         event = Event.from_dict({
             'source': 'network',
