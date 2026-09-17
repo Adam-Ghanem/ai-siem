@@ -11,6 +11,7 @@ MAX_EVENT_TYPE_LENGTH = 128
 MAX_EVENT_ENTITY_LENGTH = 256
 MAX_EVENT_PROCESS_LENGTH = 512
 MAX_EVENT_TEXT_LENGTH = 4096
+MAX_EVENT_RAW_LOG_BYTES = 10 * 1024
 
 
 def parse_time(value: Any | None) -> datetime:
@@ -57,6 +58,11 @@ def _provided_text(data: dict[str, Any], field_name: str) -> str | None:
 def _require_max_length(field_name: str, value: str, max_length: int) -> None:
     if len(value) > max_length:
         raise ValueError(f'{field_name} exceeds {max_length} characters')
+
+
+def _require_max_bytes(field_name: str, value: str, max_bytes: int) -> None:
+    if len(value.encode('utf-8')) > max_bytes:
+        raise ValueError(f'{field_name} exceeds {max_bytes} bytes')
 
 
 @dataclass
@@ -109,6 +115,8 @@ class Event:
         ):
             raise ValueError('timestamp must not be blank')
         raw_log = _provided_text(data, 'raw_log')
+        if raw_log is not None:
+            _require_max_bytes('raw_log', raw_log, MAX_EVENT_RAW_LOG_BYTES)
         return cls(
             id=event_id,
             timestamp=parse_time(explicit_timestamp),
