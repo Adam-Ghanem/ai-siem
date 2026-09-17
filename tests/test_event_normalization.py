@@ -95,6 +95,41 @@ class EventNormalizationTests(unittest.TestCase):
                 'asset': 123,
             })
 
+    def test_optional_fields_reject_oversized_values_after_trimming(self):
+        cases = (
+            ('asset', 'a' * 257, 'asset exceeds 256 characters'),
+            ('user', 'u' * 257, 'user exceeds 256 characters'),
+            ('src_ip', '1' * 257, 'src_ip exceeds 256 characters'),
+            ('dst_ip', '2' * 257, 'dst_ip exceeds 256 characters'),
+            ('status', 's' * 257, 'status exceeds 256 characters'),
+            ('process_name', 'p' * 513, 'process_name exceeds 512 characters'),
+            ('command_line', 'c' * 4097, 'command_line exceeds 4096 characters'),
+            ('message', 'm' * 4097, 'message exceeds 4096 characters'),
+        )
+        for field_name, value, error in cases:
+            with self.subTest(field_name=field_name):
+                with self.assertRaisesRegex(ValueError, error):
+                    Event.from_dict({
+                        'source': 'network',
+                        'event_type': 'connection',
+                        field_name: f' {value} ',
+                    })
+
+    def test_optional_fields_accept_boundary_lengths(self):
+        event = Event.from_dict({
+            'source': 'network',
+            'event_type': 'connection',
+            'asset': 'a' * 256,
+            'process_name': 'p' * 512,
+            'command_line': 'c' * 4096,
+            'message': 'm' * 4096,
+        })
+
+        self.assertEqual(len(event.asset or ''), 256)
+        self.assertEqual(len(event.process_name or ''), 512)
+        self.assertEqual(len(event.command_line or ''), 4096)
+        self.assertEqual(len(event.message or ''), 4096)
+
 
 if __name__ == '__main__':
     unittest.main()
