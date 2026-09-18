@@ -62,6 +62,20 @@ class DetectionRuleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'threshold must be a positive integer'):
             validate_rule(bad_threshold)
 
+    def test_non_finite_numeric_values_are_rejected(self):
+        for value in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(field='confidence', value=value):
+                rule = dict(RULES[0])
+                rule['confidence'] = value
+                with self.assertRaisesRegex(ValueError, 'confidence must be between 0 and 1'):
+                    validate_rule(rule)
+
+            with self.subTest(field='time_window_minutes', value=value):
+                rule = dict(RULES[0])
+                rule['time_window_minutes'] = value
+                with self.assertRaisesRegex(ValueError, 'time_window_minutes must be positive'):
+                    validate_rule(rule)
+
     def test_distinct_field_cannot_duplicate_grouping_dimension(self):
         rule = dict(RULES[0])
         rule['distinct_field'] = 'src_ip'
