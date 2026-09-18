@@ -52,6 +52,10 @@ def _optional_ip(data: dict[str, Any], field_name: str) -> str | None:
     normalized = _optional_text(data, field_name)
     if normalized is None:
         return None
+    if '%' in normalized:
+        raise ValueError(
+            f'{field_name} must be a valid IP address without a scope identifier'
+        )
     try:
         return str(ip_address(normalized))
     except ValueError as exc:
