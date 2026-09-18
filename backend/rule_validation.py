@@ -89,7 +89,7 @@ def validate_rule(rule: dict) -> dict:
         or not math.isfinite(confidence)
         or not 0 <= confidence <= 1
     ):
-        raise ValueError(f'{rule_id}: confidence must be a finite number between 0 and 1')
+        raise ValueError(f'{rule_id}: confidence must be between 0 and 1')
 
     for operator in ALLOWED_MATCH_OPERATORS:
         _validate_match_map(rule, operator)
@@ -105,7 +105,7 @@ def validate_rule(rule: dict) -> dict:
         or not math.isfinite(window)
         or window <= 0
     ):
-        raise ValueError(f'{rule_id}: time_window_minutes must be a finite positive number')
+        raise ValueError(f'{rule_id}: time_window_minutes must be positive')
 
     group_by = rule.get('group_by', [])
     if not isinstance(group_by, list):
