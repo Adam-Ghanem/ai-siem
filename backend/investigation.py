@@ -82,18 +82,22 @@ def build_investigation(
         anomalies,
     )
 
+    priority_base = _PRIORITY_BASE.get(incident.priority, 20)
     severity_bonus = max(
         (_SEVERITY_WEIGHT.get(alert.severity, 0) for alert in related_alerts),
         default=0,
     )
-    correlation_bonus = min(max(len(related_alerts) - 1, 0) * 7, 21)
+    distinct_rule_ids = {alert.rule_id for alert in related_alerts if alert.rule_id}
+    # Repeated alerts from one noisy rule must not manufacture cross-signal confidence.
+    # Reward only independent detection-rule corroboration.
+    correlation_bonus = min(max(len(distinct_rule_ids) - 1, 0) * 7, 21)
     anomaly_bonus = min(
         round(sum(a.anomaly_score for a in related_anomalies) * 6),
         18,
     )
     risk_score = min(
         100,
-        _PRIORITY_BASE.get(incident.priority, 20)
+        priority_base
         + severity_bonus
         + correlation_bonus
         + anomaly_bonus,
@@ -144,6 +148,13 @@ def build_investigation(
         'risk_score': risk_score,
         'risk_level': _risk_level(risk_score),
         'confidence': confidence,
+        'risk_factors': {
+            'priority_base': priority_base,
+            'severity_bonus': severity_bonus,
+            'correlation_bonus': correlation_bonus,
+            'anomaly_bonus': anomaly_bonus,
+            'distinct_detection_rules': len(distinct_rule_ids),
+        },
         'summary': summary,
         'key_evidence': key_evidence[:12],
         'mitre_tactics': tactics,
