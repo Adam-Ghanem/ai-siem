@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict, deque
 from hashlib import sha256
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address
 
 from .models import Alert, Event
 from .rules import RULES
@@ -17,12 +17,6 @@ ACTIONS = {
 SUPPRESSION_MINUTES = 15
 MIN_BASELINE_SOURCES = 3
 MAX_AI_RARE_SOURCE_ALERTS_PER_USER = 1
-PRIVATE_NETWORKS = (
-    ip_network('10.0.0.0/8'),
-    ip_network('172.16.0.0/12'),
-    ip_network('192.168.0.0/16'),
-    ip_network('fc00::/7'),
-)
 
 
 def _v(e: Event, f: str):
@@ -60,13 +54,10 @@ def _is_external_ip(value):
         ip = ip_address(value)
     except ValueError:
         return False
-    return not (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        or any(ip.version == network.version and ip in network for network in PRIVATE_NETWORKS)
-    )
+    # Rare-source detections should only treat globally routable addresses as
+    # external. Special-use and private addresses are not meaningful Internet
+    # origins and would otherwise create noisy or misleading alerts.
+    return ip.is_global
 
 
 def _entity(rule, e):
