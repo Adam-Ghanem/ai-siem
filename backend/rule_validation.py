@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 
@@ -82,8 +83,13 @@ def validate_rule(rule: dict) -> dict:
         raise ValueError(f"{rule_id}: unsupported severity '{rule['severity']}'")
 
     confidence = rule.get('confidence')
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
-        raise ValueError(f'{rule_id}: confidence must be between 0 and 1')
+    if (
+        not isinstance(confidence, (int, float))
+        or isinstance(confidence, bool)
+        or not math.isfinite(confidence)
+        or not 0 <= confidence <= 1
+    ):
+        raise ValueError(f'{rule_id}: confidence must be a finite number between 0 and 1')
 
     for operator in ALLOWED_MATCH_OPERATORS:
         _validate_match_map(rule, operator)
@@ -93,8 +99,13 @@ def validate_rule(rule: dict) -> dict:
         raise ValueError(f'{rule_id}: threshold must be a positive integer')
 
     window = rule.get('time_window_minutes', 1)
-    if not isinstance(window, (int, float)) or isinstance(window, bool) or window <= 0:
-        raise ValueError(f'{rule_id}: time_window_minutes must be positive')
+    if (
+        not isinstance(window, (int, float))
+        or isinstance(window, bool)
+        or not math.isfinite(window)
+        or window <= 0
+    ):
+        raise ValueError(f'{rule_id}: time_window_minutes must be a finite positive number')
 
     group_by = rule.get('group_by', [])
     if not isinstance(group_by, list):
