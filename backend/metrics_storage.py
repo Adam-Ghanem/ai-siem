@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .incident_storage import INCIDENT_SCHEMA
 from .metrics import PW, SW
 from .storage import connect, init_db
 
 
 def calculate_sqlite_metrics(path: str | Path | None = None) -> dict:
-    """Calculate dashboard metrics without materializing durable histories."""
+    """Calculate dashboard metrics without materializing durable histories.
+
+    Metrics are also used during early startup/readiness paths, before incident
+    snapshots have necessarily been materialized. Ensure both the core and
+    incident schemas exist so a brand-new database can be queried safely.
+    """
     init_db(path)
     with connect(path) as conn:
+        conn.executescript(INCIDENT_SCHEMA)
         conn.execute('BEGIN')
 
         event_total = int(conn.execute('SELECT COUNT(*) FROM events').fetchone()[0])
