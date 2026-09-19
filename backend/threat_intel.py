@@ -29,7 +29,7 @@ def _is_container_value(value: Any) -> bool:
 def _bounded_confidence(value: Any) -> int:
     try:
         return max(0, min(100, int(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -69,33 +69,17 @@ def _entry_is_active(entry: dict[str, Any], now: datetime | None = None) -> bool
 
 def _entry_fingerprint(entry: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        entry['indicator'],
-        entry['type'],
-        entry['source'],
-        entry['confidence'],
-        entry['severity'],
-        tuple(entry['tags']),
-        entry['description'],
-        entry['first_seen'],
-        entry['last_seen'],
-        entry['expires_at'],
+        entry['indicator'], entry['type'], entry['source'], entry['confidence'],
+        entry['severity'], tuple(entry['tags']), entry['description'],
+        entry['first_seen'], entry['last_seen'], entry['expires_at'],
     )
 
 
 class ThreatIntelIndex:
     def __init__(self, entries: Iterable[dict[str, Any]] | None = None):
         self._entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._networks: dict[int, list[tuple[ipaddress._BaseNetwork, dict[str, Any]]]] = {
-            4: [],
-            6: [],
-        }
-        self._network_index: dict[
-            int,
-            dict[ipaddress._BaseNetwork, list[dict[str, Any]]],
-        ] = {
-            4: defaultdict(list),
-            6: defaultdict(list),
-        }
+        self._networks: dict[int, list[tuple[ipaddress._BaseNetwork, dict[str, Any]]]] = {4: [], 6: []}
+        self._network_index: dict[int, dict[ipaddress._BaseNetwork, list[dict[str, Any]]]] = {4: defaultdict(list), 6: defaultdict(list)}
         self._fingerprints: set[tuple[Any, ...]] = set()
         for entry in entries or []:
             self.add(entry)
@@ -129,17 +113,12 @@ class ThreatIntelIndex:
         raw_severity = entry.get('severity')
         raw_description = entry.get('description')
         raw_tags = entry.get('tags')
-        if any(
-            value is not None and not isinstance(value, str)
-            for value in (raw_type, raw_severity, raw_description)
-        ):
+        if any(value is not None and not isinstance(value, str) for value in (raw_type, raw_severity, raw_description)):
             return False
         if raw_tags is not None:
             if isinstance(raw_tags, str):
                 pass
-            elif isinstance(raw_tags, list) and all(
-                isinstance(tag, str) for tag in raw_tags
-            ):
+            elif isinstance(raw_tags, list) and all(isinstance(tag, str) for tag in raw_tags):
                 pass
             else:
                 return False
@@ -193,51 +172,30 @@ class ThreatIntelIndex:
             self._network_index[network.version][network].append(normalized)
         return True
 
-    def _network_matches(
-        self,
-        address: ipaddress._BaseAddress,
-        now: datetime,
-    ) -> list[dict[str, Any]]:
+    def _network_matches(self, address: ipaddress._BaseAddress, now: datetime) -> list[dict[str, Any]]:
         matches: list[dict[str, Any]] = []
-        max_prefixlen = address.max_prefixlen
         index = self._network_index[address.version]
-        for prefixlen in range(max_prefixlen + 1):
+        for prefixlen in range(address.max_prefixlen + 1):
             network = ipaddress.ip_network((address, prefixlen), strict=False)
-            matches.extend(
-                entry
-                for entry in index.get(network, [])
-                if _entry_is_active(entry, now)
-            )
+            matches.extend(entry for entry in index.get(network, []) if _entry_is_active(entry, now))
         return matches
 
     def lookup(self, indicator: Any) -> dict[str, Any]:
         normalized = _normalize_indicator(indicator)
         now = datetime.now(timezone.utc)
-        matches = [
-            entry for entry in self._entries.get(normalized, [])
-            if _entry_is_active(entry, now)
-        ]
-
+        matches = [entry for entry in self._entries.get(normalized, []) if _entry_is_active(entry, now)]
         try:
             address = ipaddress.ip_address(normalized)
         except ValueError:
             address = None
         if address is not None:
             matches.extend(self._network_matches(address, now))
-
         severities = [item['severity'] for item in matches]
-        max_severity = max(
-            severities,
-            key=lambda value: _SEVERITY_ORDER.get(value, 0),
-            default='unknown',
-        )
+        max_severity = max(severities, key=lambda value: _SEVERITY_ORDER.get(value, 0), default='unknown')
         return {
-            'indicator': normalized,
-            'matched': bool(matches),
-            'match_count': len(matches),
+            'indicator': normalized, 'matched': bool(matches), 'match_count': len(matches),
             'max_confidence': max((item['confidence'] for item in matches), default=0),
-            'max_severity': max_severity,
-            'sources': sorted({item['source'] for item in matches}),
+            'max_severity': max_severity, 'sources': sorted({item['source'] for item in matches}),
             'tags': sorted({tag for item in matches for tag in item['tags']}),
             'matched_indicators': sorted({item['indicator'] for item in matches}),
             'matches': sorted(matches, key=lambda item: item['confidence'], reverse=True),
@@ -256,11 +214,7 @@ class ThreatIntelIndex:
                 current = enriched.setdefault(indicator, {**result, 'event_ids': []})
                 if event.id not in current['event_ids']:
                     current['event_ids'].append(event.id)
-        return sorted(
-            enriched.values(),
-            key=lambda item: (item['max_confidence'], item['indicator']),
-            reverse=True,
-        )
+        return sorted(enriched.values(), key=lambda item: (item['max_confidence'], item['indicator']), reverse=True)
 
     def stats(self) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -268,24 +222,11 @@ class ThreatIntelIndex:
             indicator: [entry for entry in values if _entry_is_active(entry, now)]
             for indicator, values in self._entries.items()
         }
-        active_entries_by_indicator = {
-            indicator: values
-            for indicator, values in active_entries_by_indicator.items()
-            if values
-        }
-        entries = [
-            item
-            for values in active_entries_by_indicator.values()
-            for item in values
-        ]
+        active_entries_by_indicator = {indicator: values for indicator, values in active_entries_by_indicator.items() if values}
+        entries = [item for values in active_entries_by_indicator.values() for item in values]
         return {
             'unique_indicators': len(active_entries_by_indicator),
             'entries': len(entries),
-            'network_indicators': sum(
-                1
-                for values in self._networks.values()
-                for _, entry in values
-                if _entry_is_active(entry, now)
-            ),
+            'network_indicators': sum(1 for values in self._networks.values() for _, entry in values if _entry_is_active(entry, now)),
             'sources': sorted({item['source'] for item in entries}),
         }
