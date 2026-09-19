@@ -64,6 +64,27 @@ class AuditSearchTests(unittest.TestCase):
         self.assertEqual(record['principal'], 'viewer@example.com')
         self.assertTrue(record['timestamp'].endswith('Z'))
 
+    def test_audit_search_rejects_tampered_log(self):
+        forbidden = self.client.post(
+            '/api/ingest',
+            headers={'Authorization': 'Bearer viewer-token'},
+            json={'logs': []},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertTrue(AUDIT_PATH.exists())
+
+        with AUDIT_PATH.open('a', encoding='utf-8') as handle:
+            handle.write('timestamp=forged action=authz result=success\n')
+        security._AUDIT_HEAD_CACHE.clear()
+
+        response = self.client.get(
+            '/api/audit',
+            headers={'Authorization': 'Bearer admin-token'},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['detail'], 'Audit log integrity check failed')
+
     def test_audit_search_requires_admin_role(self):
         response = self.client.get(
             '/api/audit',
