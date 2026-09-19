@@ -73,8 +73,10 @@ class AuditSearchTests(unittest.TestCase):
         self.assertEqual(forbidden.status_code, 403)
         self.assertTrue(AUDIT_PATH.exists())
 
-        with AUDIT_PATH.open('a', encoding='utf-8') as handle:
-            handle.write('timestamp=forged action=authz result=success\n')
+        original = AUDIT_PATH.read_text(encoding='utf-8')
+        tampered = original.replace('result=forbidden', 'result=success', 1)
+        self.assertNotEqual(tampered, original)
+        AUDIT_PATH.write_text(tampered, encoding='utf-8')
         security._AUDIT_HEAD_CACHE.clear()
 
         response = self.client.get(
