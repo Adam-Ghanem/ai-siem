@@ -24,9 +24,10 @@ class IngestCommitRace(HTTPException, ValueError):
 
 def _event_rows(events: Iterable[Event]) -> list[tuple]:
     rows = []
+    seen: dict[str, tuple] = {}
     for event in events:
         data = event.to_dict()
-        rows.append((
+        row = (
             event.id,
             event.timestamp.isoformat(),
             event.source,
@@ -37,7 +38,16 @@ def _event_rows(events: Iterable[Event]) -> list[tuple]:
             event.dst_ip,
             event.raw_log,
             json.dumps(data, ensure_ascii=False),
-        ))
+        )
+        existing = seen.get(event.id)
+        if existing is not None:
+            if existing != row:
+                raise IngestCommitRace(
+                    'Conflicting event ID inside ingest batch'
+                )
+            continue
+        seen[event.id] = row
+        rows.append(row)
     return rows
 
 
