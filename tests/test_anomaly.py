@@ -15,6 +15,16 @@ class AnomalyTests(unittest.TestCase):
         )
         self.assertTrue(any('failed-login' in a.reason for a in anomalies))
 
+    def test_failed_login_anomaly_requires_user_and_source_ip(self):
+        events = [
+            *[event(i, status='failure', user=None, src_ip='203.0.113.10') for i in range(5)],
+            *[event(i + 5, status='failure', user='adam', src_ip=None) for i in range(5)],
+        ]
+
+        anomalies = detect_anomalies(events)
+
+        self.assertFalse(any('failed-login' in a.reason for a in anomalies))
+
     def test_rare_source_ip_for_same_user(self):
         events = [
             event(1, status='success', user='adam', src_ip='10.0.0.1'),
