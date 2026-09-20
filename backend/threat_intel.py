@@ -59,11 +59,11 @@ def _parse_expiry(value: Any) -> datetime | None:
 
 
 def _entry_is_active(entry: dict[str, Any], now: datetime | None = None) -> bool:
-    expires_at = entry.get('expires_at')
-    if not expires_at:
-        return True
-    expiry = _parse_expiry(expires_at)
     current = now or datetime.now(timezone.utc)
+    first_seen = _parse_optional_time(entry.get('first_seen'), 'first_seen')
+    if first_seen is not None and first_seen > current:
+        return False
+    expiry = _parse_expiry(entry.get('expires_at'))
     return expiry is None or expiry > current
 
 
