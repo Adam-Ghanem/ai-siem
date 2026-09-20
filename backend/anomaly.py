@@ -50,7 +50,7 @@ def _is_external_ip(value: str | None) -> bool:
 
 
 def detect_anomalies(events:list[Event])->list[Anomaly]:
-    out=[]; by_asset=Counter(e.asset for e in events if e.asset); fails=Counter((e.user,e.src_ip) for e in events if e.event_type=='ssh_login' and e.status=='failure'); seen_src=defaultdict(set); seen_proc=defaultdict(set); rare_src_counts=Counter()
+    out=[]; by_asset=Counter(e.asset for e in events if e.asset); fails=Counter((e.user,e.src_ip) for e in events if e.event_type=='ssh_login' and e.status=='failure' and e.user and e.src_ip); seen_src=defaultdict(set); seen_proc=defaultdict(set); rare_src_counts=Counter()
     vals=list(by_asset.values())
     for asset,count in by_asset.items():
         z=_z(count,vals)
