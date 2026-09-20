@@ -79,12 +79,16 @@ def _alert_rows(alerts: Iterable[Alert]) -> list[tuple]:
     return rows
 
 
-def _stored_alert_rule_id(conn, alert_id: str) -> str | None:
+def _stored_alert_row(conn, alert_id: str) -> tuple | None:
     row = conn.execute(
-        'SELECT rule_id FROM alerts WHERE alert_id = ?',
+        '''
+        SELECT alert_id, timestamp, rule_id, severity, tactic, asset, user, src_ip, alert_json
+        FROM alerts
+        WHERE alert_id = ?
+        ''',
         (alert_id,),
     ).fetchone()
-    return str(row[0]) if row is not None else None
+    return tuple(row) if row is not None else None
 
 
 def save_ingest_batch(
@@ -130,11 +134,11 @@ def save_ingest_batch(
         saved_alerts = conn.total_changes - before_alerts
         if saved_alerts != len(alert_rows):
             for alert_row in alert_rows:
-                persisted_rule_id = _stored_alert_rule_id(conn, alert_row[0])
-                if persisted_rule_id is not None and persisted_rule_id != alert_row[2]:
+                persisted = _stored_alert_row(conn, alert_row[0])
+                if persisted is not None and persisted != alert_row:
                     conn.rollback()
                     raise IngestCommitRace(
-                        'Alert ID conflicts with persisted detection rule'
+                        'Alert ID conflicts with persisted alert payload'
                     )
 
         conn.commit()
