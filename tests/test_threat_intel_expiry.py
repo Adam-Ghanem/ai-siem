@@ -24,6 +24,26 @@ class ThreatIntelExpiryTests(unittest.TestCase):
         self.assertEqual(result['match_count'], 0)
         self.assertEqual(index.stats()['entries'], 0)
 
+    def test_future_first_seen_indicator_is_not_active_yet(self):
+        index = ThreatIntelIndex(
+            [
+                {
+                    'indicator': '203.0.113.88',
+                    'type': 'ip',
+                    'source': 'scheduled-feed',
+                    'confidence': 90,
+                    'severity': 'high',
+                    'first_seen': '2999-01-01T00:00:00Z',
+                }
+            ]
+        )
+
+        result = index.lookup('203.0.113.88')
+
+        self.assertFalse(result['matched'])
+        self.assertEqual(result['match_count'], 0)
+        self.assertEqual(index.stats()['entries'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
