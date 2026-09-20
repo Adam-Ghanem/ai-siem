@@ -107,6 +107,57 @@ class IngestAlertAtomicityTests(unittest.TestCase):
             self.assertEqual(persisted[0], 'DET-ORIGINAL')
             self.assertIn('Original detection', persisted[1])
 
+    def test_existing_same_rule_different_payload_rolls_back_new_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / 'same-rule-alert-collision.db'
+            existing = Alert(
+                alert_id='AL-SAME-RULE-COLLISION-1',
+                rule_id='DET-SAME-RULE',
+                title='Original detection',
+                severity='medium',
+                confidence=0.7,
+                tactic='Discovery',
+                technique='T1087',
+                timestamp=datetime(2026, 9, 9, 2, 0, tzinfo=timezone.utc),
+            )
+            save_ingest_batch([], [existing], db)
+
+            event = Event.from_dict(
+                {
+                    'id': 'evt-same-rule-alert-collision-1',
+                    'timestamp': '2026-09-09T02:01:00Z',
+                    'source': 'test',
+                    'event_type': 'process_start',
+                }
+            )
+            conflicting = Alert(
+                alert_id=existing.alert_id,
+                rule_id=existing.rule_id,
+                title='Changed detection payload',
+                severity='critical',
+                confidence=0.99,
+                tactic='Discovery',
+                technique='T1087',
+                timestamp=datetime(2026, 9, 9, 2, 1, tzinfo=timezone.utc),
+                event_ids=[event.id],
+            )
+
+            with self.assertRaises(IngestCommitRace):
+                save_ingest_batch([event], [conflicting], db)
+
+            with connect(db) as conn:
+                event_count = conn.execute(
+                    'SELECT COUNT(*) FROM events WHERE id = ?', (event.id,)
+                ).fetchone()[0]
+                persisted = conn.execute(
+                    'SELECT severity, alert_json FROM alerts WHERE alert_id = ?',
+                    (existing.alert_id,),
+                ).fetchone()
+
+            self.assertEqual(event_count, 0)
+            self.assertEqual(persisted[0], 'medium')
+            self.assertIn('Original detection', persisted[1])
+
     def test_existing_exact_alert_replay_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / 'existing-alert-replay.db'
