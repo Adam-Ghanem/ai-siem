@@ -62,6 +62,21 @@ def _hydrate_missing_events(
     return [by_id[event_id] for event_id in sorted(related_event_ids) if event_id in by_id]
 
 
+def _rule_balanced_confidence(alerts: list[Alert]) -> float:
+    """Average independent detection signals without letting noisy rules dominate."""
+    confidence_by_signal: dict[str, float] = {}
+    for alert in alerts:
+        # Alerts without a rule identifier cannot safely be grouped together.
+        signal_id = alert.rule_id or f'alert:{alert.alert_id}'
+        confidence_by_signal[signal_id] = max(
+            confidence_by_signal.get(signal_id, 0.0),
+            alert.confidence,
+        )
+    if not confidence_by_signal:
+        return 0.0
+    return round(sum(confidence_by_signal.values()) / len(confidence_by_signal), 3)
+
+
 def build_investigation(
     incident: Incident,
     alerts: list[Alert],
@@ -103,10 +118,7 @@ def build_investigation(
         + anomaly_bonus,
     )
 
-    confidence = round(
-        sum(alert.confidence for alert in related_alerts) / max(len(related_alerts), 1),
-        3,
-    )
+    confidence = _rule_balanced_confidence(related_alerts)
     techniques = sorted({alert.technique for alert in related_alerts if alert.technique})
     tactics = sorted({alert.tactic for alert in related_alerts if alert.tactic})
 
