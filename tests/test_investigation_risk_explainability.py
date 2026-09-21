@@ -22,13 +22,13 @@ class InvestigationRiskExplainabilityTests(unittest.TestCase):
             recommended_actions=[],
         )
 
-    def _alert(self, alert_id, rule_id):
+    def _alert(self, alert_id, rule_id, confidence=0.8):
         return Alert(
             alert_id=alert_id,
             rule_id=rule_id,
             title='Signal',
             severity='medium',
-            confidence=0.8,
+            confidence=confidence,
             tactic='Discovery',
             technique='T1046',
             timestamp=datetime.now(timezone.utc),
@@ -63,6 +63,37 @@ class InvestigationRiskExplainabilityTests(unittest.TestCase):
         self.assertEqual(factors['severity_bonus'], 14)
         self.assertEqual(factors['anomaly_bonus'], 0)
         self.assertEqual(result['risk_score'], 57)
+
+    def test_repeated_noisy_rule_cannot_dominate_investigation_confidence(self):
+        alerts = [
+            *[
+                self._alert(f'noisy-{index}', 'DET-NOISY', confidence=0.99)
+                for index in range(20)
+            ],
+            self._alert('independent', 'DET-INDEPENDENT', confidence=0.41),
+        ]
+        result = build_investigation(
+            self._incident([alert.alert_id for alert in alerts]),
+            alerts,
+            [],
+            [],
+        )
+
+        self.assertEqual(result['confidence'], 0.7)
+
+    def test_same_rule_uses_strongest_observation_for_confidence(self):
+        alerts = [
+            self._alert('a-low', 'DET-SAME', confidence=0.35),
+            self._alert('a-high', 'DET-SAME', confidence=0.85),
+        ]
+        result = build_investigation(
+            self._incident([alert.alert_id for alert in alerts]),
+            alerts,
+            [],
+            [],
+        )
+
+        self.assertEqual(result['confidence'], 0.85)
 
 
 if __name__ == '__main__':
