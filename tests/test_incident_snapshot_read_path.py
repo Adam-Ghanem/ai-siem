@@ -74,6 +74,17 @@ class IncidentSnapshotReadPathTests(unittest.TestCase):
             self.assertEqual(saved, 0)
             self.assertFalse(incident_snapshots_dirty(path))
 
+    def test_refresh_claim_is_single_flight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'incidents.db'
+            mark_incident_snapshots_dirty(path)
+
+            self.assertTrue(incident_snapshots_dirty(path))
+            self.assertFalse(incident_snapshots_dirty(path))
+
+            replace_incidents([], path)
+            self.assertFalse(incident_snapshots_dirty(path))
+
     def test_refresh_cannot_clear_dirty_signal_from_concurrent_update(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'incidents.db'
