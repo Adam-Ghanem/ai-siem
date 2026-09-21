@@ -79,12 +79,13 @@ def mark_incident_snapshots_dirty(path: str | Path | None = None) -> None:
 
 
 def incident_snapshots_dirty(path: str | Path | None = None) -> bool:
-    """Return freshness and atomically claim a pending refresh when needed.
+    """Atomically claim a pending snapshot refresh.
 
-    The state machine is fresh -> dirty -> refreshing. A concurrent invalidation
-    can move refreshing back to dirty; replace_incidents then preserves that
-    newer dirty signal instead of accidentally marking stale materialized data
-    fresh.
+    Only the caller that moves the state from dirty to refreshing receives
+    ``True``. Other readers can continue using the last materialized snapshot
+    while that refresh is in flight instead of repeating the same expensive
+    correlation work. A concurrent invalidation can still move refreshing back
+    to dirty; ``replace_incidents`` preserves that newer dirty signal.
     """
     _ensure_schema(path)
     with connect(path) as conn:
@@ -93,13 +94,14 @@ def incident_snapshots_dirty(path: str | Path | None = None) -> bool:
             'SELECT dirty FROM incident_snapshot_state WHERE id = 1'
         ).fetchone()
         state = SNAPSHOT_DIRTY if row is None else int(row['dirty'])
-        if state == SNAPSHOT_DIRTY:
+        claimed = state == SNAPSHOT_DIRTY
+        if claimed:
             conn.execute(
                 'UPDATE incident_snapshot_state SET dirty = ? WHERE id = 1',
                 (SNAPSHOT_REFRESHING,),
             )
         conn.commit()
-    return state != SNAPSHOT_FRESH
+    return claimed
 
 
 def save_incidents(
