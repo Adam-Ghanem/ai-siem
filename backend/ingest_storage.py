@@ -79,6 +79,18 @@ def _alert_rows(alerts: Iterable[Alert]) -> list[tuple]:
     return rows
 
 
+def _stored_event_row(conn, event_id: str) -> tuple | None:
+    row = conn.execute(
+        '''
+        SELECT id, timestamp, source, event_type, asset, user, src_ip, dst_ip, raw_log, event_json
+        FROM events
+        WHERE id = ?
+        ''',
+        (event_id,),
+    ).fetchone()
+    return tuple(row) if row is not None else None
+
+
 def _stored_alert_row(conn, alert_id: str) -> tuple | None:
     row = conn.execute(
         '''
@@ -116,10 +128,13 @@ def save_ingest_batch(
             )
         saved_events = conn.total_changes - before_events
         if saved_events != len(event_rows):
-            conn.rollback()
-            raise IngestCommitRace(
-                'Event ID became occupied before ingest commit'
-            )
+            for event_row in event_rows:
+                persisted = _stored_event_row(conn, event_row[0])
+                if persisted is not None and persisted != event_row:
+                    conn.rollback()
+                    raise IngestCommitRace(
+                        'Event ID conflicts with persisted event payload'
+                    )
 
         before_alerts = conn.total_changes
         if alert_rows:
