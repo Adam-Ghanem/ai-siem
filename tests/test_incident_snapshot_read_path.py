@@ -12,6 +12,7 @@ os.environ.setdefault('AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE', '1000')
 
 from backend import main
 from backend.incident_storage import (
+    SNAPSHOT_REFRESH_LEASE_SECONDS,
     incident_snapshots_dirty,
     mark_incident_snapshots_dirty,
     replace_incidents,
@@ -81,6 +82,29 @@ class IncidentSnapshotReadPathTests(unittest.TestCase):
 
             self.assertTrue(incident_snapshots_dirty(path))
             self.assertFalse(incident_snapshots_dirty(path))
+
+            replace_incidents([], path)
+            self.assertFalse(incident_snapshots_dirty(path))
+
+    def test_abandoned_refresh_claim_can_be_reclaimed_after_lease(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'incidents.db'
+            mark_incident_snapshots_dirty(path)
+
+            with patch('backend.incident_storage.time.time', return_value=1000.0):
+                self.assertTrue(incident_snapshots_dirty(path))
+
+            with patch(
+                'backend.incident_storage.time.time',
+                return_value=1000.0 + SNAPSHOT_REFRESH_LEASE_SECONDS - 0.01,
+            ):
+                self.assertFalse(incident_snapshots_dirty(path))
+
+            with patch(
+                'backend.incident_storage.time.time',
+                return_value=1000.0 + SNAPSHOT_REFRESH_LEASE_SECONDS,
+            ):
+                self.assertTrue(incident_snapshots_dirty(path))
 
             replace_incidents([], path)
             self.assertFalse(incident_snapshots_dirty(path))
