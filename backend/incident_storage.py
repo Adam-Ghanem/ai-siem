@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -20,7 +21,8 @@ CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
 CREATE INDEX IF NOT EXISTS idx_incidents_owner ON incidents(owner);
 CREATE TABLE IF NOT EXISTS incident_snapshot_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    dirty INTEGER NOT NULL DEFAULT 1
+    dirty INTEGER NOT NULL DEFAULT 1,
+    refresh_claimed_at REAL
 );
 INSERT OR IGNORE INTO incident_snapshot_state (id, dirty) VALUES (1, 1);
 '''
@@ -28,12 +30,21 @@ INSERT OR IGNORE INTO incident_snapshot_state (id, dirty) VALUES (1, 1);
 SNAPSHOT_FRESH = 0
 SNAPSHOT_DIRTY = 1
 SNAPSHOT_REFRESHING = 2
+SNAPSHOT_REFRESH_LEASE_SECONDS = 60.0
 
 
 def _ensure_schema(path: str | Path | None = None) -> None:
     init_db(path)
     with connect(path) as conn:
         conn.executescript(INCIDENT_SCHEMA)
+        columns = {
+            str(row['name'])
+            for row in conn.execute('PRAGMA table_info(incident_snapshot_state)')
+        }
+        if 'refresh_claimed_at' not in columns:
+            conn.execute(
+                'ALTER TABLE incident_snapshot_state ADD COLUMN refresh_claimed_at REAL'
+            )
         conn.commit()
 
 
@@ -72,7 +83,8 @@ def mark_incident_snapshots_dirty(path: str | Path | None = None) -> None:
     _ensure_schema(path)
     with connect(path) as conn:
         conn.execute(
-            'UPDATE incident_snapshot_state SET dirty = ? WHERE id = 1',
+            'UPDATE incident_snapshot_state '
+            'SET dirty = ?, refresh_claimed_at = NULL WHERE id = 1',
             (SNAPSHOT_DIRTY,),
         )
         conn.commit()
@@ -86,19 +98,34 @@ def incident_snapshots_dirty(path: str | Path | None = None) -> bool:
     while that refresh is in flight instead of repeating the same expensive
     correlation work. A concurrent invalidation can still move refreshing back
     to dirty; ``replace_incidents`` preserves that newer dirty signal.
+
+    Refresh claims are leased so an exception or worker termination cannot
+    strand the snapshot state in ``refreshing`` forever. Once the lease expires,
+    the next reader may reclaim the refresh and rebuild the materialized view.
     """
     _ensure_schema(path)
+    now = time.time()
     with connect(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute(
-            'SELECT dirty FROM incident_snapshot_state WHERE id = 1'
+            'SELECT dirty, refresh_claimed_at '
+            'FROM incident_snapshot_state WHERE id = 1'
         ).fetchone()
         state = SNAPSHOT_DIRTY if row is None else int(row['dirty'])
-        claimed = state == SNAPSHOT_DIRTY
+        claimed_at = None if row is None else row['refresh_claimed_at']
+        lease_expired = (
+            state == SNAPSHOT_REFRESHING
+            and (
+                claimed_at is None
+                or now - float(claimed_at) >= SNAPSHOT_REFRESH_LEASE_SECONDS
+            )
+        )
+        claimed = state == SNAPSHOT_DIRTY or lease_expired
         if claimed:
             conn.execute(
-                'UPDATE incident_snapshot_state SET dirty = ? WHERE id = 1',
-                (SNAPSHOT_REFRESHING,),
+                'UPDATE incident_snapshot_state '
+                'SET dirty = ?, refresh_claimed_at = ? WHERE id = 1',
+                (SNAPSHOT_REFRESHING, now),
             )
         conn.commit()
     return claimed
@@ -152,7 +179,8 @@ def replace_incidents(
                 rows,
             )
         conn.execute(
-            'UPDATE incident_snapshot_state SET dirty = ? '
+            'UPDATE incident_snapshot_state '
+            'SET dirty = ?, refresh_claimed_at = NULL '
             'WHERE id = 1 AND dirty = ?',
             (SNAPSHOT_FRESH, SNAPSHOT_REFRESHING),
         )
