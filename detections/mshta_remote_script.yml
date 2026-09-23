@@ -1,0 +1,8 @@
+id: DET-WIN-005
+title: Remote Script Execution via Mshta
+severity: high
+tactic: Defense Evasion
+technique: T1218.005
+source: windows
+logic: mshta executes a remote URL or inline javascript/vbscript payload
+recommendation: Isolate the host if unapproved, preserve the process tree and command line, and investigate the referenced payload and parent process.
