@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from backend.investigation import build_investigation
 from backend.models import Alert, Incident
@@ -94,6 +95,25 @@ class InvestigationRiskExplainabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(result['confidence'], 0.85)
+
+    @patch('backend.investigation.load_alerts_by_ids')
+    def test_missing_related_alerts_are_hydrated_from_durable_storage(self, load_alerts):
+        in_memory = self._alert('a-memory', 'DET-MEMORY', confidence=0.6)
+        durable = self._alert('a-durable', 'DET-DURABLE', confidence=0.9)
+        load_alerts.return_value = [durable]
+
+        result = build_investigation(
+            self._incident(['a-memory', 'a-durable']),
+            [in_memory],
+            [],
+            [],
+        )
+
+        load_alerts.assert_called_once_with({'a-durable'})
+        self.assertEqual(result['related_alert_ids'], ['a-durable', 'a-memory'])
+        self.assertEqual(result['risk_factors']['distinct_detection_rules'], 2)
+        self.assertEqual(result['risk_factors']['correlation_bonus'], 7)
+        self.assertEqual(result['confidence'], 0.75)
 
 
 if __name__ == '__main__':
