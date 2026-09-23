@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from .alert_storage import load_alerts_by_ids
 from .evidence_storage import load_events_by_ids
 from .models import Alert, Anomaly, Event, Incident
 
@@ -41,6 +42,25 @@ def _related_anomalies(
         if related_event_ids.intersection(anomaly.related_event_ids)
         or anomaly.entity in entities
     ]
+
+
+def _hydrate_missing_alerts(
+    related_alert_ids: set[str],
+    alerts: list[Alert],
+) -> list[Alert]:
+    related_alerts = [alert for alert in alerts if alert.alert_id in related_alert_ids]
+    if os.getenv('AI_SIEM_STORAGE', 'sqlite').lower() != 'sqlite':
+        return related_alerts
+
+    loaded_ids = {alert.alert_id for alert in related_alerts}
+    missing_ids = related_alert_ids - loaded_ids
+    if not missing_ids:
+        return related_alerts
+
+    durable_alerts = load_alerts_by_ids(missing_ids)
+    by_id = {alert.alert_id: alert for alert in related_alerts}
+    by_id.update({alert.alert_id: alert for alert in durable_alerts})
+    return [by_id[alert_id] for alert_id in sorted(related_alert_ids) if alert_id in by_id]
 
 
 def _hydrate_missing_events(
@@ -84,7 +104,7 @@ def build_investigation(
     anomalies: list[Anomaly],
 ) -> dict[str, Any]:
     related_alert_ids = set(incident.related_alert_ids)
-    related_alerts = [a for a in alerts if a.alert_id in related_alert_ids]
+    related_alerts = _hydrate_missing_alerts(related_alert_ids, alerts)
     related_event_ids = {
         event_id
         for alert in related_alerts
