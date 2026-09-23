@@ -7,7 +7,7 @@ services:
       AI_SIEM_HOST: 0.0.0.0
       AI_SIEM_PORT: 8000
       AI_SIEM_ALLOWED_ORIGIN: http://localhost:5173
-      AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:-dev-token}
+      AI_SIEM_API_KEY: ${AI_SIEM_API_KEY:?AI_SIEM_API_KEY must be set to a strong secret before starting AI-SIEM}
       AI_SIEM_STORAGE: sqlite
       AI_SIEM_DB_PATH: /app/data/ai_siem.db
       AI_SIEM_RATE_LIMIT_PER_MINUTE: ${AI_SIEM_RATE_LIMIT_PER_MINUTE:-60}

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'Dockerfile'
+      - 'docker-compose.yml'
       - 'requirements.txt'
       - 'backend/**'
       - 'data/**'
@@ -12,6 +13,7 @@ on:
     branches: [main]
     paths:
       - 'Dockerfile'
+      - 'docker-compose.yml'
       - 'requirements.txt'
       - 'backend/**'
       - 'data/**'
