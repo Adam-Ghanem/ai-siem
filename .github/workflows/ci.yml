@@ -57,5 +57,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate Docker Compose
+      - name: Verify Docker Compose fails closed without an API key
+        run: |
+          if env -u AI_SIEM_API_KEY docker compose config >/tmp/compose-no-key.out 2>/tmp/compose-no-key.err; then
+            echo 'Docker Compose unexpectedly accepted a deployment without AI_SIEM_API_KEY' >&2
+            exit 1
+          fi
+          grep -q 'AI_SIEM_API_KEY must be set' /tmp/compose-no-key.err
+
+      - name: Validate Docker Compose with explicit credential
+        env:
+          AI_SIEM_API_KEY: ci-compose-validation-token
         run: docker compose config
