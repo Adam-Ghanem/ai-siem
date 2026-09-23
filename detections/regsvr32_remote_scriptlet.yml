@@ -1,0 +1,15 @@
+id: DET-WIN-006
+title: Remote Scriptlet Execution via Regsvr32
+severity: high
+confidence: 0.94
+tactic: Defense Evasion
+technique: T1218.010
+source: windows
+event_type: windows_event
+description: Detects Regsvr32 using the scriptlet protocol handler with scrobj.dll to execute a remote scriptlet.
+false_positives:
+  - Authorized legacy administration tooling that explicitly uses remote COM scriptlets
+response:
+  - Validate the parent process and initiating user
+  - Preserve process and network telemetry
+  - Review the remote scriptlet URL and related host activity
