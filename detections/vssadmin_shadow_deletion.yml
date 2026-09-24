@@ -1,0 +1,20 @@
+id: DET-WIN-009
+name: Shadow copy deletion via Vssadmin
+status: production
+severity: critical
+confidence: 0.96
+tactic: Impact
+technique: T1490
+log_source: windows process creation
+description: >-
+  Detects vssadmin.exe deleting Windows Volume Shadow Copies, a high-signal
+  recovery-inhibition behavior commonly associated with destructive activity
+  and ransomware operations.
+triage:
+  - Preserve the full process command line and parent/child process tree.
+  - Identify the initiating user, host, and whether the action was authorized.
+  - Review adjacent backup, service, file-encryption, and endpoint telemetry.
+  - Escalate rapidly when paired with mass file modification or backup tampering.
+false_positives: >-
+  Legitimate backup or recovery maintenance can delete shadow copies. Validate
+  approved maintenance windows and the responsible administrative tooling.
