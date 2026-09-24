@@ -1,0 +1,17 @@
+id: DET-WIN-008
+name: Script proxy execution via Rundll32
+status: production
+severity: high
+confidence: 0.94
+tactic: Defense Evasion
+technique: T1218.011
+log_source: windows process creation
+description: >-
+  Detects rundll32.exe using the mshtml RunHTMLApplication entry point with a
+  javascript: payload, a high-signal signed-binary proxy execution pattern.
+triage:
+  - Preserve the full process command line and parent/child process tree.
+  - Identify the initiating user, host, and any network activity near execution.
+  - Review adjacent process creation, script-engine, and endpoint telemetry.
+false_positives: >-
+  Uncommon. Validate internally developed administrative tooling before closing.
