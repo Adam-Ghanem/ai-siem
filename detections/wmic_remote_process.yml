@@ -1,0 +1,15 @@
+id: DET-WIN-007
+title: Remote Process Creation via WMIC
+severity: high
+confidence: 0.92
+tactic: Execution
+technique: T1047
+source: windows
+event_type: windows_event
+description: Detects WMIC targeting a remote node to create a process, a high-signal pattern for remote execution via Windows Management Instrumentation.
+false_positives:
+  - Authorized legacy administration or software-deployment tooling using WMIC for remote process creation
+response:
+  - Validate the target host, initiating user, and parent process
+  - Review the created command and authentication context
+  - Correlate with remote logon, process, and network telemetry on the target
