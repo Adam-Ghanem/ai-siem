@@ -17,6 +17,24 @@ export OPENAI_API_KEY='<secret>'
 export AI_SIEM_AI_MAX_REQUESTS_PER_MINUTE=3
 ```
 
+For Docker, **do not put the API key in Compose YAML or source control**.
+The opt-in `docker-compose.ai.yml` overlay mounts a secret file instead of
+passing the key through a container environment variable:
+
+```bash
+# Create a secret file outside the repo using a safe interactive editor
+# then restrict access (example path; never commit its contents).
+chmod 600 /path/to/private/openai-key
+export AI_SIEM_AI_LOCAL_SECRET_FILE=/path/to/private/openai-key
+export AI_SIEM_AI_MODEL='<supported-model-from-your-account>'
+export AI_SIEM_API_KEY='<your-backend-auth-secret>'
+docker compose -f docker-compose.yml -f docker-compose.ai.yml up --build
+```
+
+The overlay sets `AI_SIEM_AI_API_KEY_FILE=/run/secrets/openai_api_key`,
+which takes precedence over the environment key. The base Compose file
+continues to work with AI disabled.
+
 The endpoint is `POST /api/ai/alerts/{alert_id}/analyze`. It requires a
 bearer identity with analyst/admin role. It does not accept a user prompt,
 model override or API key from the HTTP request body. API key is never included
