@@ -25,10 +25,39 @@ function render(){
   $('#incidents-list').innerHTML=state.incidents.map(i=>`<div class="incident"><strong>${safe(i.incident_id)}</strong><span>${safe(i.title)}</span>${badge(i.priority)}<em>${safe(i.status)}</em><small>${(i.related_alert_ids||[]).length} alerts · ${(i.timeline||[]).length} timeline events</small><small>${safe((i.related_alert_ids||[]).join(', '))}</small></div>`).join('');
   $('#anomalies-list').innerHTML=state.anomalies.map(a=>`<div class="incident"><strong>${safe(a.anomaly_id)}</strong><span>${safe(a.reason)}</span>${badge(Math.round((Number(a.anomaly_score)||0)*100)+' score')}<small>${safe(a.entity)} · ${safe(Object.entries(a.contributing_features||{}).map(([k,v])=>`${k}=${Array.isArray(v)?v.join('|'):v}`).join(' · '))}</small></div>`).join('');
   $('#detections-body').innerHTML=state.rules.map(d=>`<tr><td>${safe(d.rule_id)}</td><td>${safe(d.name)}</td><td>${badge(d.severity)}</td><td>${safe(d.tactic)}</td><td>${safe(d.technique)}</td></tr>`).join('');
-  renderDistribution('#source-distribution', state.metrics.source_distribution || {}); renderDistribution('#event-type-distribution', state.metrics.event_type_distribution || {}); renderMitre(); renderNarrative(); animateBars();
+  renderDistribution('#source-distribution', state.metrics.source_distribution || {}); renderDistribution('#event-type-distribution', state.metrics.event_type_distribution || {}); renderMitre(); renderSeverityDonut(); renderNarrative(); animateBars();
 }
 function renderDistribution(selector, data){const entries=Object.entries(data);$(selector).innerHTML=entries.length ? entries.map(([k,v])=>`<div class="content-item"><span>${safe(k)}</span>${badge(v)}</div>`).join('') : '<div class="content-item"><span>No data</span></div>';}
 function renderMitre(){const m={};state.alerts.forEach(a=>m[a.tactic]=(m[a.tactic]||0)+1);$('#mitre').innerHTML=Object.entries(m).map(([k,v])=>`<div><span>${safe(k)}</span><b>${Number(v)||0}</b></div>`).join('') || '<div><span>No active alerts</span><b>0</b></div>';}
+function renderSeverityDonut(){
+  const segments = [
+    ['critical','var(--red)'],
+    ['high','var(--orange)'],
+    ['medium','var(--yellow)'],
+    ['low','var(--green)'],
+  ];
+  const counts = Object.fromEntries(segments.map(([key])=>[key,0]));
+  for (const alert of state.alerts) {
+    const level = String(alert.severity || '').toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(counts, level)) counts[level]++;
+  }
+  const total = Object.values(counts).reduce((sum,n)=>sum+n,0);
+  const donut = $('.donut');
+  if (!total) {
+    donut.style.background = 'var(--surface2)';
+    donut.setAttribute('aria-label', 'No severity distribution to display');
+    return;
+  }
+  let offset=0;
+  const stops=[];
+  for (const [level,color] of segments) {
+    const next=offset + counts[level]/total*100;
+    if (next>offset) stops.push(`${color} ${offset}% ${next}%`);
+    offset=next;
+  }
+  donut.style.background = `conic-gradient(${stops.join(', ')})`;
+  donut.setAttribute('aria-label', segments.map(([level])=>`${level}: ${counts[level]}`).join('; '));
+}
 function renderNarrative(){const a=[...state.alerts].sort((x,y)=>(y.confidence||0)-(x.confidence||0))[0]; if(!a){$('#narrative').innerHTML='<strong>No active detections</strong><span>Backend is reachable but no alerts are currently generated.</span>';return;} $('#narrative').innerHTML=`<strong>${safe(a.severity)} activity on ${safe(a.asset)}</strong><span>${safe(a.title)}. Rule <b>${safe(a.rule_id)}</b> maps to <b>${safe(a.tactic)}</b> / <b>${safe(a.technique)}</b> with <b>${Math.round((Number(a.confidence)||0)*100)}% confidence</b>.</span><span><b>Action:</b> ${safe(a.recommended_action)}</span>`;}
 function animateBars(){
   // Events currently loaded from the paginated API response, not synthetic bars.
