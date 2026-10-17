@@ -20,6 +20,8 @@ test('app sanitizes dynamic templates and never persists bearer keys', () => {
   assert.match(app, /safe\(action\)/);
   assert.doesNotMatch(app, /localStorage\.(?:getItem|setItem)\(['"]AI_SIEM_API_KEY/);
   assert.doesNotMatch(app, /Math\.random\(\)/);
+  assert.match(app, /function renderSeverityDonut\(\)/);
+  assert.match(app, /counts\[level\]\+\+/);
   assert.match(app, /let apiToken = ''/);
 });
 test('HTML loads security module before dashboard entrypoint', () => {
