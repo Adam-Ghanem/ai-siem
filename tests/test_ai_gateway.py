@@ -92,8 +92,8 @@ class AIGatewayTests(unittest.TestCase):
         self.assertNotIn('private-user', wire)
         self.assertNotIn('PRIVATE_COMMAND', wire)
         self.assertNotIn('8.8.8.8', wire)
-        self.assertIn('"store":false', wire)
-        self.assertIn('"max_output_tokens":400', wire)
+        self.assertIs(json.loads(wire)['store'], False)
+        self.assertEqual(json.loads(wire)['max_output_tokens'], 400)
         self.assertEqual(captured[0].url.host, 'api.openai.com')
 
     def test_fabricated_evidence_reference_is_rejected(self):
