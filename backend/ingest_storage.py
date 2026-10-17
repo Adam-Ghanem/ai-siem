@@ -120,9 +120,10 @@ def save_ingest_batch(
         if event_rows:
             conn.executemany(
                 '''
-                INSERT OR IGNORE INTO events
+                INSERT INTO events
                 (id, timestamp, source, event_type, asset, user, src_ip, dst_ip, raw_log, event_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
                 ''',
                 event_rows,
             )
@@ -130,7 +131,7 @@ def save_ingest_batch(
         if saved_events != len(event_rows):
             for event_row in event_rows:
                 persisted = _stored_event_row(conn, event_row[0])
-                if persisted is not None and persisted != event_row:
+                if persisted is None or persisted != event_row:
                     conn.rollback()
                     raise IngestCommitRace(
                         'Event ID conflicts with persisted event payload'
@@ -140,9 +141,10 @@ def save_ingest_batch(
         if alert_rows:
             conn.executemany(
                 '''
-                INSERT OR IGNORE INTO alerts
+                INSERT INTO alerts
                 (alert_id, timestamp, rule_id, severity, tactic, asset, user, src_ip, alert_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alert_id) DO NOTHING
                 ''',
                 alert_rows,
             )
@@ -150,7 +152,7 @@ def save_ingest_batch(
         if saved_alerts != len(alert_rows):
             for alert_row in alert_rows:
                 persisted = _stored_alert_row(conn, alert_row[0])
-                if persisted is not None and persisted != alert_row:
+                if persisted is None or persisted != alert_row:
                     conn.rollback()
                     raise IngestCommitRace(
                         'Alert ID conflicts with persisted alert payload'
