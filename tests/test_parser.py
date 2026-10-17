@@ -40,6 +40,27 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(e.event_type, 'http_request')
         self.assertEqual(e.src_ip, '198.51.100.25')
 
+
+    def test_firewall_port_and_protocol_are_normalized(self):
+        e = parse_event('2026-06-11T13:00:00Z fw01 FW action=DENY src=10.10.1.20 dst=10.10.2.10 dpt=3389 proto=TCP msg="scan"')
+        self.assertEqual(e.dst_port, 3389)
+        self.assertEqual(e.protocol, 'tcp')
+
+    def test_web_timestamp_respects_timezone_offset(self):
+        e = parse_event('198.51.100.25 - - [11/Jun/2026:15:00:00 +0200] "GET / HTTP/1.1" 200 123 "Agent"')
+        self.assertEqual(e.timestamp.isoformat(), '2026-06-11T13:00:00+00:00')
+
+    def test_linux_ip_supports_ipv6(self):
+        e = parse_event('Jun 11 10:00:00 server sshd[10]: Failed password for root from 2001:db8::1 port 55 ssh2')
+        self.assertEqual(e.src_ip, '2001:db8::1')
+
+    def test_syslog_year_rollover(self):
+        from datetime import datetime, timezone
+        from backend.parser import _linux_time
+        reference = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+        actual = _linux_time('Dec', 31, '23:59:00', reference)
+        self.assertEqual(actual.year, 2025)
+
     def test_empty_line_raises_value_error(self):
         with self.assertRaises(ValueError):
             parse_event('   ')
