@@ -61,7 +61,7 @@ class AIGatewayTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             secret_path = Path(directory) / 'openai-key'
-            secret_path.write_text('test-runtime-secret\\n', encoding='utf-8')
+            secret_path.write_text('test-runtime-secret', encoding='utf-8')
             with patch.dict(os.environ, {
                 'AI_SIEM_AI_API_KEY_FILE': str(secret_path),
                 'OPENAI_API_KEY': 'fallback-must-not-be-used',
