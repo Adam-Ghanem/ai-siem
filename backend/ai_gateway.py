@@ -11,6 +11,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -53,11 +54,22 @@ class AISettings:
             raise AIUnavailable("Invalid AI rate-limit configuration") from exc
         if not 1 <= limit <= 60:
             raise AIUnavailable("AI request limit must be between 1 and 60")
+        secret_file = os.getenv("AI_SIEM_AI_API_KEY_FILE", "").strip()
+        if secret_file:
+            try:
+                raw_key = Path(secret_file).read_bytes()
+                if len(raw_key) > 4096:
+                    raise AIUnavailable("AI key secret file is too large")
+                api_key = raw_key.decode("utf-8").strip()
+            except (OSError, UnicodeError) as exc:
+                raise AIUnavailable("AI key secret file cannot be read") from exc
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
         return cls(
             enabled=os.getenv("AI_SIEM_AI_ENABLED", "false").lower() == "true",
             external_opt_in=os.getenv("AI_SIEM_AI_EXTERNAL_OPT_IN", "false").lower() == "true",
             model=os.getenv("AI_SIEM_AI_MODEL", "").strip(),
-            api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+            api_key=api_key,
             provider=os.getenv("AI_SIEM_AI_PROVIDER", "openai").lower().strip(),
             max_requests_per_minute=limit,
         )
