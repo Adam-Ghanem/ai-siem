@@ -247,3 +247,16 @@ Contributions, detection ideas, parser improvements, security fixes, and SOC wor
   <strong>AI-SIEM</strong><br>
   <em>From telemetry to actionable security intelligence.</em>
 </p>
+## Hardened dashboard and Docker deployment
+
+Run `AI_SIEM_API_KEY=<strong-random-value> docker compose up --build` for a local lab.
+Open `http://localhost:5173` and enter the key using **Connect**. The browser
+keeps the credential in page memory only, never localStorage/sessionStorage.
+A page reload requires re-entry. Activity bars reflect recent events from
+the *currently loaded paginated API response*, not synthetic telemetry.
+The frontend is loopback-only by default in Docker Compose.
+For production, use an OIDC-backed session, a backend-for-frontend, HTTPS,
+secure HttpOnly cookies, and enterprise policy enforcement instead of browser
+bearer-token login.
+
+Run `node --test tests/frontend_security.test.cjs` for browser-layer checks.
