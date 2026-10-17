@@ -31,6 +31,28 @@ class DetectionTests(unittest.TestCase):
         alerts = run_detections(events)
         self.assertTrue(any(a.rule_id == 'DET-NET-001' for a in alerts))
 
+
+    def test_vertical_scan_to_many_ports_on_one_host(self):
+        events = [
+            event(i, source='firewall', event_type='network_connection',
+                  status='deny', src_ip='10.10.9.99', dst_ip='10.10.2.10',
+                  dst_port=1000+i, protocol='tcp')
+            for i in range(1, 9)
+        ]
+        alerts = run_detections(events)
+        self.assertTrue(any(a.rule_id == 'DET-NET-002' for a in alerts))
+        self.assertFalse(any(a.rule_id == 'DET-NET-001' for a in alerts))
+
+    def test_common_port_to_single_destination_is_not_vertical_scan(self):
+        events = [
+            event(i, source='firewall', event_type='network_connection',
+                  src_ip='10.10.9.99', dst_ip='10.10.2.10',
+                  dst_port=443, protocol='tcp')
+            for i in range(1, 12)
+        ]
+        alerts = run_detections(events)
+        self.assertFalse(any(a.rule_id in {'DET-NET-001', 'DET-NET-002'} for a in alerts))
+
     def test_sql_injection_path(self):
         alerts = run_detections([event(1, source='waf', event_type='http_request', src_ip='198.51.100.25', message='GET /search?q=1 UNION SELECT password FROM users user_agent=sqlmap')])
         self.assertTrue(any(a.rule_id == 'DET-WAF-001' and a.severity == 'high' for a in alerts))
