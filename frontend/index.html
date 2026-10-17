@@ -30,7 +30,7 @@
     <main class="main">
       <header class="topbar">
         <div><span class="label">Security Operations Command Center</span><h1 id="view-title">Dashboard</h1></div>
-        <div class="actions"><div class="clock" id="clock">--:--:--</div><button id="refresh" class="btn ghost">Refresh</button><button id="run-analysis" class="btn primary">Run Live Analysis</button></div>
+        <div class="actions"><div class="clock" id="clock">--:--:--</div><label for="api-token" class="sr-only">API bearer token</label><input id="api-token" class="api-token-input" type="password" autocomplete="off" placeholder="Backend API key" /><button id="connect-token" class="btn ghost">Connect</button><button id="refresh" class="btn ghost">Refresh</button><button id="run-analysis" class="btn primary">Run Live Analysis</button></div>
       </header>
 
       <section id="dashboard" class="view active">
@@ -47,7 +47,7 @@
           <div class="kpi"><span>Risk Score</span><strong id="metric-risk">--</strong><em>Explainable score</em></div>
         </div>
         <div class="grid">
-          <article class="panel wide"><h3>Alert Activity</h3><p>Detection volume by refresh window.</p><div class="bars" id="bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></article>
+          <article class="panel wide"><h3>Recent Event Activity</h3><p>Events over the last seven hours from the currently loaded API page.</p><div class="bars" id="bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></article>
           <article class="panel"><h3>Alert Queue</h3><p>Current detection count.</p><div class="donut"><strong id="open-alerts">--</strong><small>alerts</small></div></article>
           <article class="panel"><h3>MITRE Coverage</h3><p>Active tactics.</p><div class="mitre" id="mitre"></div></article>
           <article class="panel full"><h3>Threat Narrative</h3><p>Current analyst summary from the active queue.</p><div class="analysis-box" id="narrative"><strong>Loading...</strong><span>Waiting for telemetry.</span></div></article>
@@ -63,6 +63,7 @@
       <section id="reports" class="view"><article class="panel full"><h3>Security Report Summary</h3><p>Use API outputs to produce incident reports and portfolio screenshots.</p><div class="cards" id="reports-list"><div class="mini"><strong>README</strong><br><span>Architecture, endpoints, limitations, roadmap</span></div><div class="mini"><strong>Tests</strong><br><span>Parser, detection, correlation, anomaly, metrics, API</span></div></div></article></section>
     </main>
   </div>
+  <script src="./security.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
