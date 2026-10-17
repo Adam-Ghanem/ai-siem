@@ -247,3 +247,10 @@ Contributions, detection ideas, parser improvements, security fixes, and SOC wor
   <strong>AI-SIEM</strong><br>
   <em>From telemetry to actionable security intelligence.</em>
 </p>
+## Optional GPT-based advisory triage
+
+The backend includes a guarded, disabled-by-default OpenAI Responses API
+integration for **metadata-only** alert analysis. See
+[AI triage security and configuration](docs/ai-triage.md) before enabling.
+An analyst/admin may call `POST /api/ai/alerts/{alert_id}/analyze`.
+No real AI API requests are made by the test suite or during normal startup.
