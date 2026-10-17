@@ -46,6 +46,12 @@ jobs:
           AI_SIEM_RATE_LIMIT_PER_MINUTE: 1000
           AI_SIEM_INGEST_RATE_LIMIT_PER_MINUTE: 1000
 
+      - name: Validate and test frontend JavaScript
+        run: |
+          node --check frontend/security.js
+          node --check frontend/app.js
+          node --test tests/frontend_security.test.cjs
+
       - name: Bandit security scan
         run: bandit -q -r backend agents -lll
 
