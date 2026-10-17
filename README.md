@@ -254,7 +254,7 @@ Open `http://localhost:5173` and enter the key using **Connect**. The browser
 keeps the credential in page memory only, never localStorage/sessionStorage.
 A page reload requires re-entry. Activity bars reflect recent events from
 the *currently loaded paginated API response*, not synthetic telemetry.
-The frontend is loopback-only by default in Docker Compose.
+Both the API and frontend are bound to loopback by default in Docker Compose.
 For production, use an OIDC-backed session, a backend-for-frontend, HTTPS,
 secure HttpOnly cookies, and enterprise policy enforcement instead of browser
 bearer-token login.
