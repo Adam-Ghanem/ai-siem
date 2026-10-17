@@ -2,7 +2,7 @@ services:
   backend:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       AI_SIEM_HOST: 0.0.0.0
       AI_SIEM_PORT: 8000
@@ -18,15 +18,12 @@ services:
       - ai_siem_data:/app/data
       - ai_siem_logs:/app/logs
   frontend:
-    image: node:22-alpine
-    working_dir: /ui
+    image: nginx:stable-alpine
     volumes:
-      - ./frontend:/ui
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_URL: http://localhost:8000
+      - "127.0.0.1:5173:80"
 
 volumes:
   ai_siem_data:
