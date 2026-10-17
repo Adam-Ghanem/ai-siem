@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .alert_storage import alert_exists as stored_alert_exists, load_alerts_by_ids
+from .ai_gateway import AIProviderError, AIQuotaExceeded, AISettings, AIUnavailable, analyze_alert
 from .anomaly import detect_anomalies
 from .audit_search import AuditLogIntegrityError, search_audit_records
 from .correlation import correlate
@@ -757,6 +758,49 @@ def get_incident_investigation(incident_id: str):
     if analysis['case']:
         analysis['grounding']['generated_from'].append('incident_case')
     return analysis
+
+
+@app.post('/api/ai/alerts/{alert_id}/analyze')
+async def analyze_alert_with_ai(alert_id: str, request: Request):
+    """Explicitly opted-in, metadata-only advisory; no automatic containment."""
+    if not alert_id or len(alert_id) > 256:
+        raise HTTPException(status_code=400, detail='Invalid alert ID')
+    try:
+        settings = AISettings.from_env()
+        if not settings.enabled or not settings.external_opt_in:
+            raise AIUnavailable('AI analysis requires explicit operator opt-in')
+    except AIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if AI_SIEM_STORAGE == 'sqlite':
+        matching = load_alerts_by_ids([alert_id])
+    else:
+        matching = [item for item in alerts() if item.alert_id == alert_id]
+    if not matching:
+        raise HTTPException(status_code=404, detail='Alert not found')
+    alert = matching[0]
+    event_ids = alert.event_ids[:12]
+    if AI_SIEM_STORAGE == 'sqlite':
+        evidence = load_events_by_ids(event_ids)
+    else:
+        wanted = set(event_ids)
+        evidence = [event for event in EVENTS if event.id in wanted][:12]
+    try:
+        result = await analyze_alert(alert, evidence, settings=settings)
+    except AIQuotaExceeded as exc:
+        audit_log(request, 'ai_analysis', 'rate_limited')
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={'Retry-After': '60'},
+        ) from exc
+    except AIUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AIProviderError as exc:
+        audit_log(request, 'ai_analysis', 'provider_error')
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    audit_log(request, 'ai_analysis', 'success', f'alert_id={alert_id}')
+    return result
 
 
 @app.get('/api/anomalies')

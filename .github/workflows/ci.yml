@@ -69,3 +69,13 @@ jobs:
         env:
           AI_SIEM_API_KEY: ci-compose-validation-token
         run: docker compose config
+
+      - name: Validate optional AI provider secret-file deployment
+        env:
+          AI_SIEM_API_KEY: ci-compose-validation-token
+          AI_SIEM_AI_MODEL: mock-model
+          AI_SIEM_AI_LOCAL_SECRET_FILE: /tmp/ai-siem-openai-test-key
+        run: |
+          printf '%s' 'mock-secret-not-a-real-key' > "$AI_SIEM_AI_LOCAL_SECRET_FILE"
+          docker compose -f docker-compose.yml -f docker-compose.ai.yml config >/dev/null
+          rm -f "$AI_SIEM_AI_LOCAL_SECRET_FILE"
