@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json, os, re
+from ipaddress import ip_address
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -43,17 +44,37 @@ def _unknown(raw):
     if len(PARSER_STATS['unknown_samples'])<10: PARSER_STATS['unknown_samples'].append(str(raw)[:200])
     return Event(f'evt-{uuid4().hex[:12]}', datetime.now(timezone.utc), 'unknown', 'unknown', message=str(raw), raw_log=str(raw))
 
-def _linux_time(mon, day, clock):
-    year = datetime.now(timezone.utc).year
-    return datetime.strptime(f'{year} {mon} {int(day)} {clock}', '%Y %b %d %H:%M:%S').replace(tzinfo=timezone.utc)
+def _linux_time(mon, day, clock, reference=None):
+    """Choose nearest plausible syslog year, handling Dec/Jan rotation and replay."""
+    now = reference or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError('reference timestamp must be timezone-aware')
+    candidates = []
+    for year in (now.year - 1, now.year, now.year + 1):
+        try:
+            parsed = datetime.strptime(
+                f'{year} {mon} {int(day)} {clock}', '%Y %b %d %H:%M:%S'
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        candidates.append(parsed)
+    if not candidates:
+        raise ValueError('invalid syslog timestamp')
+    return min(candidates, key=lambda ts: abs((ts - now).total_seconds()))
 
 def _linux_user(msg):
     m = re.search(r'invalid user (\S+)', msg) or re.search(r'for (?:invalid user )?(\S+) from', msg)
     return m.group(1) if m else None
 
 def _linux_ip(msg):
-    m = re.search(r'from (\d+\.\d+\.\d+\.\d+)', msg)
-    return m.group(1) if m else None
+    # Normalize IPv4/IPv6 as real IP addresses, not arbitrary log substrings.
+    match = re.search(r'\bfrom\s+(\S+)', msg)
+    if not match:
+        return None
+    try:
+        return str(ip_address(match.group(1)))
+    except ValueError:
+        return None
 
 def _ssh_status(msg):
     lowered = msg.lower()
@@ -86,18 +107,18 @@ def parse_event(item: str | dict[str, Any]) -> Event:
             if m := LINUX.match(raw):
                 msg = m.group('msg'); status = _ssh_status(msg)
                 PARSER_STATS['parsed_events']+=1
-                return Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw)
+                return _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', _linux_time(m.group('mon'),m.group('day'),m.group('clock')), 'linux_auth','ssh_login', m.group('asset'), _linux_user(msg), _linux_ip(msg), None, None, None, status, msg, raw))
             if m := WIN.match(raw):
                 eid=m.group('eid'); et='powershell_execution' if eid=='4104' or 'powershell' in raw.lower() else 'admin_account_change' if eid in {'4720','4732'} else 'windows_event'
                 ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'windows', et, m.group('asset'), m.group('user'), None, None, m.group('proc'), m.group('cmd') or '', 'success', raw, raw))
                 PARSER_STATS['parsed_events']+=1
                 return ev
             if m := FW.match(raw):
-                ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw))
+                ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', parse_time(m.group('ts')), 'firewall', 'network_connection', m.group('asset'), None, m.group('src'), m.group('dst'), None, None, m.group('action').lower(), f"{m.group('msg')} dst_port={m.group('port')} proto={m.group('proto')}", raw, dst_port=int(m.group('port')), protocol=m.group('proto').lower()))
                 PARSER_STATS['parsed_events']+=1
                 return ev
             if m := WEB.match(raw):
-                ts = datetime.strptime(m.group('ts').split()[0], '%d/%b/%Y:%H:%M:%S').replace(tzinfo=timezone.utc)
+                ts = datetime.strptime(m.group('ts'), '%d/%b/%Y:%H:%M:%S %z').astimezone(timezone.utc)
                 ev = _validate_event_timestamp(Event(f'evt-{uuid4().hex[:12]}', ts, 'waf', 'http_request', 'web01', None, m.group('src'), None, None, None, m.group('status'), f"{m.group('method')} {m.group('path')} user_agent={m.group('ua')}", raw))
                 PARSER_STATS['parsed_events']+=1
                 return ev

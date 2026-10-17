@@ -30,7 +30,7 @@ class AnomalyTests(unittest.TestCase):
             event(1, status='success', user='adam', src_ip='10.0.0.1'),
             event(2, status='success', user='adam', src_ip='10.0.0.2'),
             event(3, status='success', user='adam', src_ip='10.0.0.3'),
-            event(4, status='success', user='adam', src_ip='198.51.100.10'),
+            event(4, status='success', user='adam', src_ip='8.8.8.8'),
         ]
 
         anomalies = detect_anomalies(events)
@@ -50,6 +50,20 @@ class AnomalyTests(unittest.TestCase):
         self.assertTrue(
             any('Rare source IP 172.200.10.25' in a.reason for a in anomalies)
         )
+
+
+    def test_special_use_ips_are_not_external_rare_sources(self):
+        baseline = [
+            event(i, status='success', user='adam', src_ip=f'10.0.0.{i}')
+            for i in range(1, 4)
+        ]
+        for ip in ('198.51.100.10', '100.64.1.2', '169.254.1.1', 'fc00::1'):
+            with self.subTest(ip=ip):
+                anomalies = detect_anomalies([
+                    *baseline,
+                    event(4, status='success', user='adam', src_ip=ip),
+                ])
+                self.assertFalse(any('Rare source IP' in a.reason for a in anomalies))
 
     def test_off_hours_privileged_access(self):
         anomalies = detect_anomalies(

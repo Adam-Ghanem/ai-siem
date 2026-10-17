@@ -2,19 +2,12 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from hashlib import sha256
 from statistics import mean, pstdev
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address
 from .models import Anomaly, Event
 
 MIN_BASELINE_SOURCES = 3
 MAX_RARE_SOURCE_ANOMALIES_PER_USER = 1
 MIN_RARE_SOURCE_SCORE = .80
-PRIVATE_NETWORKS = (
-    ip_network('10.0.0.0/8'),
-    ip_network('172.16.0.0/12'),
-    ip_network('192.168.0.0/16'),
-    ip_network('fc00::/7'),
-)
-
 
 def _z(v, vals):
     if len(vals)<2: return 0.0
@@ -37,17 +30,9 @@ def _is_external_ip(value: str | None) -> bool:
     if not value:
         return False
     try:
-        ip = ip_address(value)
+        return ip_address(value).is_global
     except ValueError:
         return False
-    return not (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        or any(ip.version == network.version and ip in network for network in PRIVATE_NETWORKS)
-    )
-
 
 def detect_anomalies(events:list[Event])->list[Anomaly]:
     out=[]; by_asset=Counter(e.asset for e in events if e.asset); fails=Counter((e.user,e.src_ip) for e in events if e.event_type=='ssh_login' and e.status=='failure' and e.user and e.src_ip); seen_src=defaultdict(set); seen_proc=defaultdict(set); rare_src_counts=Counter()
