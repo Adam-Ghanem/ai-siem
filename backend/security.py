@@ -461,6 +461,12 @@ def _required_roles(request: Request) -> set[str]:
         return {'analyst', 'admin'}
     if (
         request.method == 'POST'
+        and request.url.path.startswith('/api/ai/alerts/')
+        and request.url.path.endswith('/analyze')
+    ):
+        return {'analyst', 'admin'}
+    if (
+        request.method == 'POST'
         and request.url.path.startswith('/api/incidents/')
         and request.url.path.endswith('/case')
     ):
