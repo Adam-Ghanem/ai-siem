@@ -55,6 +55,26 @@ class AIGatewayTests(unittest.TestCase):
     def setUp(self):
         _reset_request_budget_for_tests()
 
+
+    def test_read_api_key_from_runtime_secret_file(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            secret_path = Path(directory) / 'openai-key'
+            secret_path.write_text('test-runtime-secret\\n', encoding='utf-8')
+            with patch.dict(os.environ, {
+                'AI_SIEM_AI_API_KEY_FILE': str(secret_path),
+                'OPENAI_API_KEY': 'fallback-must-not-be-used',
+            }):
+                cfg = AISettings.from_env()
+                self.assertEqual(cfg.api_key, 'test-runtime-secret')
+            secret_path.unlink()
+            with patch.dict(os.environ, {
+                'AI_SIEM_AI_API_KEY_FILE': str(secret_path),
+            }):
+                with self.assertRaises(AIUnavailable):
+                    AISettings.from_env()
+
     def test_explicit_opt_in_and_configuration_required(self):
         with self.assertRaises(AIUnavailable):
             asyncio.run(analyze_alert(
