@@ -1,0 +1,16 @@
+# Optional explicit provider opt-in for local Docker evaluation. NOT a hosted
+# enterprise secrets system. In production, use secret manager / workload identity.
+services:
+  backend:
+    environment:
+      AI_SIEM_AI_ENABLED: "true"
+      AI_SIEM_AI_EXTERNAL_OPT_IN: "true"
+      AI_SIEM_AI_PROVIDER: openai
+      AI_SIEM_AI_MODEL: ${AI_SIEM_AI_MODEL:?Set AI_SIEM_AI_MODEL before opting in}
+      AI_SIEM_AI_MAX_REQUESTS_PER_MINUTE: ${AI_SIEM_AI_MAX_REQUESTS_PER_MINUTE:-3}
+      AI_SIEM_AI_API_KEY_FILE: /run/secrets/openai_api_key
+    secrets:
+      - openai_api_key
+secrets:
+  openai_api_key:
+    file: ${AI_SIEM_AI_LOCAL_SECRET_FILE:?Set AI_SIEM_AI_LOCAL_SECRET_FILE outside the repository}
